@@ -1,0 +1,20 @@
+{
+  "name": "fabtraq-e2e",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "e2e": "npm --prefix ../fabtraq-be run db:reset && npm --prefix ../fabtraq-be run db:seed && playwright test",
+    "e2e:ui": "playwright test --ui",
+    "e2e:report": "playwright show-report",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0",
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "pg": "^8.13.0",
+    "typescript": "^5.6.0"
+  }
+}
