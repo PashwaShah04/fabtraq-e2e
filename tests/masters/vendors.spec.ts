@@ -33,6 +33,11 @@ test('create → list → edit → persist a vendor', async ({ page }) => {
   await clickButton(page, 'Update vendor');
   await expectToast(page, 'Vendor updated');
 
+  // PERSIST — re-open the same vendor's edit form via a fresh fetch and
+  // verify the field that was actually edited (Contact Person), not just
+  // the untouched name still being present in the list.
   await gotoAndExpect(page, '/vendors');
-  await expect(page.getByRole('cell', { name })).toBeVisible();
+  await page.getByRole('row', { name }).getByRole('button', { name: 'Edit' }).click();
+  await expect(page).toHaveURL(/\/vendors\/[^/]+\/edit/);
+  await expect(page.getByLabel('Contact Person')).toHaveValue('E2E Contact EDITED');
 });
