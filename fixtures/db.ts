@@ -7,6 +7,10 @@ export type LedgerKey = {
   lotNumber?: string | null;
   locationId?: string | null;
   floorId?: string | null;
+  // At-job-worker position rows (challan-out credit leg / challan-in debit leg)
+  // carry a non-null job_worker_id with floorId/locationId = null. undefined =
+  // no filter (matches jw and non-jw rows alike); null = IS NULL (floor rows only).
+  jobWorkerId?: string | null;
 };
 
 // Build a WHERE clause honoring: undefined = no filter, null = IS NULL, value = equality.
@@ -17,6 +21,7 @@ function whereFor(key: LedgerKey): { sql: string; params: unknown[] } {
     lot_number: key.lotNumber,
     location_id: key.locationId,
     floor_id: key.floorId,
+    job_worker_id: key.jobWorkerId,
   };
   const clauses: string[] = [];
   const params: unknown[] = [];
