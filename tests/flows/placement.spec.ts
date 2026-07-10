@@ -26,39 +26,34 @@ import { expectToast } from '../../support/assert';
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
-// KNOWN BUG (confirmed by reading, not fixed — see task-18-report.md):
+// FIXED (2026-07-10, spec docs/superpowers/specs/2026-07-10-unplaced-stock-
+// visibility-design.md): the silent-ledger bug this file used to document
+// with a `test.fail()` tripwire is resolved. Two BE changes:
 //
-// place-stock.service.ts's addPlacements docblock claims: "Writes placed-only
-// ledger rows via applyPurchaseLedger / applyChallanOutLedger /
-// applyChallanInYarnLedger when the item transitions to fully_placed." The
-// method body only calls `this.inventory.mintPlacements(...)` (writes
-// `placements` rows + updates placementStatus) — it never calls
-// applyPurchaseLedger/applyChallanOutLedger/applyChallanInYarnLedger. A
-// repo-wide grep confirms those three functions are called from exactly one
-// site each, all inside the CREATE flows (yarn-purchase.service.ts:200,
-// jw-challan-out.service.ts:136, jw-challan-in.service.ts:320) — never from
-// place-stock.service.ts. There is no Prisma middleware/$extends and no DB
-// trigger on stock_ledger that could write it another way (grepped
-// $use/$extends across src/, grepped migrations/ for CREATE TRIGGER — none).
-// fabtraq-be's own integration tests confirm this too:
-// tests/integration/place-stock-be10.routes.test.ts's "POST /placements"
-// describe block asserts placementStatus transitions and the audit log —
-// never stock_ledger.
+// 1. Create-time bucket credit (design §3.1) — `applyPurchaseLedger` /
+//    `applyChallanInYarnLedger` now write ONE extra `stock_ledger` row for
+//    the unplaced remainder at the "bucket" position
+//    (locationId=NULL, floorId=NULL, jobWorkerId=NULL), transactionType
+//    unchanged ('purchase' / 'challan_in'). This is what makes pending stock
+//    show up as an "Awaiting placement" row in Stock Balance / Lots
+//    immediately after create, before anyone visits /place-stock.
 //
-// Net effect: stock placed through the /place-stock queue+editor is
-// recorded in the `placements` table (and placementStatus flips to
-// fully_placed), but NEVER reaches `stock_ledger` — the table every other
-// flow in this app reads floor balances from (see stock-transfer.spec.ts,
-// yarn-purchase.spec.ts). The floor a user just "placed" stock onto silently
-// shows no additional balance.
+// 2. Queue placement (design §3.2, the actual bug fix) — `PlaceStockService.
+//    addPlacements` now calls the new `IInventoryService.applyPlacementLedger`
+//    inside the same transaction as `mintPlacements`, writing a move-pair per
+//    placement: bucket debit (out=q) + floor credit (in=q), both
+//    transactionType='placement'. Stock placed through the /place-stock queue
+//    now reaches `stock_ledger` — the floor a user "places" onto immediately
+//    shows the new balance, and the source lot's bucket balance drains by the
+//    same amount (double-entry: bucket + floor deltas net to zero for a given
+//    placement).
 //
-// This is reported, not fixed (constraints: real bug -> DONE_WITH_CONCERNS,
-// no cross-repo changes). The second test below encodes the CORRECT expected
-// behavior (+Q ledger delta at the chosen floor key) and is marked
-// `test.fail()` so the run stays green while the assertion documents the
-// real requirement: if fabtraq-be ships the missing ledger write, this test
-// will start unexpectedly PASSING, which Playwright reports as a failure —
-// a built-in tripwire to remove the annotation once fixed.
+// The second test below asserts this move-pair directly. The third test
+// below is the full user-reported scenario (docs design §5 / origin session
+// "when I purchase yarn, if it is placed or not it should be visible in my
+// inventory"): create unplaced → bucket credit + "Awaiting placement" row
+// visible → place in two partial batches → floor balance grows / bucket
+// drains each time → item leaves the queue once fully placed.
 // ---------------------------------------------------------------------------
 
 test(
@@ -159,17 +154,8 @@ test(
 );
 
 test(
-  'placing stock via the editor should credit the chosen floor with a +Q stock_ledger entry (BLOCKED — BE never writes it, see top-of-file note)',
+  'placing stock via the editor credits the chosen floor and drains the awaiting-placement bucket with a move-pair ledger entry',
   async ({ page, db }) => {
-    test.fail(
-      true,
-      'Confirmed BE bug: PlaceStockService.addPlacements never calls ' +
-        'applyPurchaseLedger/applyChallanOutLedger/applyChallanInYarnLedger — only the ' +
-        'CREATE flows do. Stock placed through /place-stock never reaches stock_ledger. ' +
-        'This test asserts the CORRECT behavior and is expected to fail until BE adds the ' +
-        'missing ledger write; remove test.fail() once fixed.',
-    );
-
     const Q = 25;
 
     const vendor = await db.queryOne<{ id: string; code: string; name: string }>(
@@ -221,6 +207,20 @@ test(
     );
     expect(item, 'the created purchase must have exactly one item').not.toBeNull();
 
+    // The CREATE itself (zero placements) must have already written a bucket
+    // credit for the full Q — design §3.1. Keyed on the just-minted lot
+    // number, so this is a real read of a specific row, not a tautology.
+    const bucketKey = {
+      lotNumber: item!.lot_number,
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: null,
+      floorId: null,
+      jobWorkerId: null,
+    };
+    const bucketAfterCreate = await db.ledgerBalance(bucketKey);
+    expect(bucketAfterCreate).toBeCloseTo(Q, 3);
+
     await gotoAndExpect(page, '/place-stock');
     await page.getByRole('row', { name: item!.lot_number }).click();
     await expect(page).toHaveURL(new RegExp(`/place-stock/yarn_purchase_item/${item!.id}$`));
@@ -230,23 +230,261 @@ test(
     await selectByAriaLabel(page, 'Select floor', floor!.name);
     await fillByLabel(page, 'placement quantity 1', String(Q));
 
-    // Ledger key exactly as applyPurchaseLedger would write it (had it been
-    // called): (lotNumber, qualityId, skuId, locationId, floorId) — the same
-    // floor picked in the UI, so the assertion is a true single source of truth.
-    const key = {
+    // Floor-credit leg exactly as applyPlacementLedger writes it: the same
+    // floor picked in the UI, so the assertion is a true single source of
+    // truth. jobWorkerId is explicitly null on this leg (distinct from a JW
+    // position row).
+    const floorKey = {
       lotNumber: item!.lot_number,
       qualityId: quality!.id,
       skuId: sku!.id,
       locationId: location!.id,
       floorId: floor!.id,
+      jobWorkerId: null,
     };
+    const floorBefore = await db.ledgerBalance(floorKey);
 
-    const { delta } = await db.ledgerDelta(key, async () => {
+    const { delta: bucketDelta } = await db.ledgerDelta(bucketKey, async () => {
       await clickButton(page, 'Save Placements');
       await expectToast(page, 'Stock placed successfully');
       await expect(page).toHaveURL(/\/place-stock$/);
     });
+    const floorAfter = await db.ledgerBalance(floorKey);
 
-    expect(delta).toBeCloseTo(Q, 3);
+    // Move pair: bucket drains by Q, floor credits by Q — double entry nets
+    // to zero across the two legs.
+    expect(bucketDelta).toBeCloseTo(-Q, 3);
+    expect(floorAfter - floorBefore).toBeCloseTo(Q, 3);
+  },
+);
+
+test(
+  'user scenario: purchase yarn without placing it shows as "Awaiting placement", then placing it in two batches moves the balance to the floor and drops it off the queue',
+  async ({ page, db }) => {
+    const Q = 1000;
+    const HALF = 500;
+
+    const vendor = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM vendors WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(vendor, 'seed must provide at least one active vendor').not.toBeNull();
+
+    const quality = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM yarn_qualities WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(quality, 'seed must provide at least one active yarn quality').not.toBeNull();
+
+    const sku = await db.queryOne<{ id: string; name: string; shade_number: string | null }>(
+      `SELECT id, name, shade_number FROM yarn_skus
+       WHERE status = 'active' AND quality_id = $1
+       ORDER BY code LIMIT 1`,
+      [quality!.id],
+    );
+    expect(sku, 'seed must provide at least one active SKU for the chosen quality').not.toBeNull();
+
+    const location = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM locations WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(location, 'seed must provide at least one active location').not.toBeNull();
+
+    const floor = await db.queryOne<{ id: string; name: string }>(
+      `SELECT id, name FROM location_floors WHERE status = 'active' AND location_id = $1
+       ORDER BY name LIMIT 1`,
+      [location!.id],
+    );
+    expect(floor, 'seed must provide at least one active floor for the chosen location').not.toBeNull();
+
+    // ── Step 1: purchase 1000 KG with ZERO placements (the original bug
+    // report — "when I purchase yarn, if it is placed or not it should be
+    // visible in my inventory").
+    await gotoAndExpect(page, '/yarn-purchases/new');
+    await selectByAriaLabel(page, 'Select vendor', `${vendor!.code} – ${vendor!.name}`);
+    await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
+    const skuOptionLabel =
+      sku!.shade_number !== null && sku!.shade_number !== '' ? `${sku!.name} — ${sku!.shade_number}` : sku!.name;
+    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await fillByLabel(page, 'Quantity for line 1', String(Q));
+
+    await clickButton(page, 'Save purchase');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/yarn-purchases\/[^/]+$/);
+    const purchaseId = page.url().split('/').pop();
+
+    const item = await db.queryOne<{ id: string; lot_number: string; placement_status: string }>(
+      `SELECT id, lot_number, placement_status FROM yarn_purchase_items WHERE purchase_id = $1`,
+      [purchaseId],
+    );
+    expect(item, 'the created purchase must have exactly one item').not.toBeNull();
+    expect(item!.placement_status).toBe('pending');
+
+    const bucketKey = {
+      lotNumber: item!.lot_number,
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: null,
+      floorId: null,
+      jobWorkerId: null,
+    };
+    const floorKey = {
+      lotNumber: item!.lot_number,
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: location!.id,
+      floorId: floor!.id,
+      jobWorkerId: null,
+    };
+
+    // Ledger: create-time bucket credit for the full unplaced quantity.
+    expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(Q, 3);
+    expect(await db.ledgerBalance(floorKey)).toBeCloseTo(0, 3);
+
+    // ── Step 2: Stock Balance page — filter to (quality, sku) with NO
+    // location filter, so the null-location bucket group surfaces alongside
+    // any floor groups. Cross-check the rendered balance against a direct
+    // ledger read for the exact same group key (quality/sku/location=null/
+    // floor=null/jobWorker=null — this group aggregates across ALL lots of
+    // that quality+sku, same as inventory.spec.ts's oracle rule).
+    await gotoAndExpect(page, `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}`);
+    const awaitingRow = page.getByRole('row').filter({ hasText: 'Awaiting placement' });
+    await expect(awaitingRow).toBeVisible();
+    const groupBucketBalance = await db.ledgerBalance({
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: null,
+      floorId: null,
+      jobWorkerId: null,
+    });
+    const awaitingBalanceCell = awaitingRow.getByRole('cell', { name: /^\d+\.\d{3} kg$/ });
+    const awaitingBalanceText = (await awaitingBalanceCell.textContent()) ?? '';
+    expect(Number.parseFloat(awaitingBalanceText)).toBeCloseTo(groupBucketBalance, 3);
+    expect(groupBucketBalance).toBeGreaterThanOrEqual(Q);
+
+    // ── Step 3: Lots page — exact lotNumber filter isolates THIS lot only,
+    // independent of any other quality+sku bucket balance in the DB.
+    await gotoAndExpect(page, `/inventory/lots?lotNumber=${item!.lot_number}`);
+    const lotRows = page.getByRole('row', { name: item!.lot_number });
+    await expect(lotRows).toHaveCount(1);
+    await expect(lotRows.first()).toContainText('Awaiting placement');
+    await expect(lotRows.first()).toContainText('1000.000 kg');
+
+    // ── Step 4: place HALF (500) via the Place Stock queue + editor.
+    await gotoAndExpect(page, '/place-stock');
+    await page.getByRole('row', { name: item!.lot_number }).click();
+    await expect(page).toHaveURL(new RegExp(`/place-stock/yarn_purchase_item/${item!.id}$`));
+
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
+    await selectByAriaLabel(page, 'Select floor', floor!.name);
+    await fillByLabel(page, 'placement quantity 1', String(HALF));
+
+    const { delta: bucketDelta1 } = await db.ledgerDelta(bucketKey, async () => {
+      await clickButton(page, 'Save Placements');
+      await expectToast(page, 'Stock placed successfully');
+      await expect(page).toHaveURL(/\/place-stock$/);
+    });
+    expect(bucketDelta1).toBeCloseTo(-HALF, 3);
+    expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(HALF, 3);
+    expect(await db.ledgerBalance(floorKey)).toBeCloseTo(HALF, 3);
+
+    const afterFirstPlacement = await db.queryOne<{ placement_status: string }>(
+      `SELECT placement_status FROM yarn_purchase_items WHERE id = $1`,
+      [item!.id],
+    );
+    expect(afterFirstPlacement!.placement_status).toBe('partially_placed');
+
+    // Item is STILL in the queue (not fully placed yet).
+    await gotoAndExpect(page, '/place-stock');
+    await expect(page.getByRole('row', { name: item!.lot_number })).toBeVisible();
+    await expect(page.getByRole('row', { name: item!.lot_number })).toContainText('Partial');
+
+    // Lots page now shows TWO rows for this lot number: the bucket remainder
+    // and the floor position.
+    await gotoAndExpect(page, `/inventory/lots?lotNumber=${item!.lot_number}`);
+    const midRows = page.getByRole('row', { name: item!.lot_number });
+    await expect(midRows).toHaveCount(2);
+    const midBucketRow = midRows.filter({ hasText: 'Awaiting placement' });
+    const midFloorRow = midRows.filter({ hasText: floor!.name });
+    await expect(midBucketRow).toHaveCount(1);
+    await expect(midBucketRow).toContainText('500.000 kg');
+    await expect(midFloorRow).toHaveCount(1);
+    await expect(midFloorRow).toContainText('500.000 kg');
+
+    // ── Step 5: place the REMAINING 500 — item transitions to fully_placed
+    // and leaves the queue.
+    await gotoAndExpect(page, '/place-stock');
+    await page.getByRole('row', { name: item!.lot_number }).click();
+    await expect(page).toHaveURL(new RegExp(`/place-stock/yarn_purchase_item/${item!.id}$`));
+
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
+    await selectByAriaLabel(page, 'Select floor', floor!.name);
+    await fillByLabel(page, 'placement quantity 1', String(HALF));
+
+    const { delta: bucketDelta2 } = await db.ledgerDelta(bucketKey, async () => {
+      await clickButton(page, 'Save Placements');
+      await expectToast(page, 'Stock placed successfully');
+      await expect(page).toHaveURL(/\/place-stock$/);
+    });
+    expect(bucketDelta2).toBeCloseTo(-HALF, 3);
+    expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(0, 3);
+    expect(await db.ledgerBalance(floorKey)).toBeCloseTo(Q, 3);
+
+    const afterSecondPlacement = await db.queryOne<{ placement_status: string }>(
+      `SELECT placement_status FROM yarn_purchase_items WHERE id = $1`,
+      [item!.id],
+    );
+    expect(afterSecondPlacement!.placement_status).toBe('fully_placed');
+
+    // Item has LEFT the queue.
+    await gotoAndExpect(page, '/place-stock');
+    await expect(page.getByRole('row', { name: item!.lot_number })).toHaveCount(0);
+
+    // Lots page: bucket row is gone (0 balance, filtered out), only the
+    // floor row remains, now carrying the full 1000.
+    await gotoAndExpect(page, `/inventory/lots?lotNumber=${item!.lot_number}`);
+    const finalRows = page.getByRole('row', { name: item!.lot_number });
+    await expect(finalRows).toHaveCount(1);
+    await expect(finalRows.first()).not.toContainText('Awaiting placement');
+    await expect(finalRows.first()).toContainText(floor!.name);
+    await expect(finalRows.first()).toContainText('1000.000 kg');
+
+    // Stock Balance page for the exact (quality, sku, location, floor)
+    // group: cross-checked against the ledger, same oracle rule as
+    // inventory.spec.ts.
+    await gotoAndExpect(
+      page,
+      `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}&locationId=${location!.id}` +
+        `&floorId=${floor!.id}`,
+    );
+    const floorGroupBalance = await db.ledgerBalance({
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: location!.id,
+      floorId: floor!.id,
+      jobWorkerId: null,
+    });
+    const floorRow = page.getByRole('row', { name: floor!.name });
+    await expect(floorRow).toBeVisible();
+    const floorBalanceCell = floorRow.getByRole('cell', { name: /^\d+\.\d{3} kg$/ });
+    const floorBalanceText = (await floorBalanceCell.textContent()) ?? '';
+    expect(Number.parseFloat(floorBalanceText)).toBeCloseTo(floorGroupBalance, 3);
+
+    // No "Awaiting placement" row left for THIS lot's (quality, sku) group —
+    // filtered the same way as step 2 (quality+sku, no location/floor), so
+    // the absence is actually witnessed by the Balance page, not excluded by
+    // construction. Cross-checked against the ledger group balance, which
+    // must now be exactly 0 (this lot's bucket fully drained; no other
+    // unplaced item exists for this quality+sku at this point in the suite).
+    await gotoAndExpect(page, `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}`);
+    expect(
+      await db.ledgerBalance({
+        qualityId: quality!.id,
+        skuId: sku!.id,
+        locationId: null,
+        floorId: null,
+        jobWorkerId: null,
+      }),
+    ).toBeCloseTo(0, 3);
+    await expect(page.getByRole('row').filter({ hasText: 'Awaiting placement' })).toHaveCount(0);
   },
 );
