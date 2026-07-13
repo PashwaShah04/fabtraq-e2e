@@ -449,18 +449,46 @@ test(
     const qtyInput = row.locator(`[aria-label="existing placement quantity ${placementId}"]`);
     await expect(qtyInput).toBeVisible();
 
+    // Both edits submit to the SAME endpoint with the SAME success toast text
+    // ("Placement updated") — waiting on the toast is a race: if the first
+    // edit's toast hasn't auto-dismissed yet when the second edit fires,
+    // `expectToast` matches the STALE toast from edit #1 instantly, and the
+    // DB gets queried before edit #2's PATCH has actually committed. Wait
+    // deterministically on the PATCH response instead (registered before the
+    // click, per Playwright's recommended Promise.all([waitForResponse,
+    // action]) pattern, so the listener can't miss a response that resolves
+    // faster than the await chain) — AND match on the request's OWN body
+    // (the exact quantity just submitted), not just method+url+status: two
+    // consecutive edits share the same method/URL, and axios's CSRF-retry
+    // interceptor (fabtraq-fe client.ts) can re-issue a request behind the
+    // scenes, so a looser predicate can resolve against a stale/retried
+    // response for a DIFFERENT edit's payload — exactly the kind of race
+    // this wait is meant to eliminate, not reintroduce in a new shape.
+    const waitForPlacementPatch = (expectedQuantity: number) =>
+      page.waitForResponse((res) => {
+        if (res.request().method() !== 'PATCH') return false;
+        if (!res.url().includes(`/placements/${placementId}`)) return false;
+        if (res.status() !== 200) return false;
+        const body = res.request().postDataJSON() as { quantity?: number } | null;
+        return body?.quantity === expectedQuantity;
+      });
+
     // ---- Edit #1: Q -> EDIT_1 ----
     await qtyInput.fill(String(EDIT_1));
-    await row.getByRole('button', { name: 'Save', exact: true }).click();
-    await expectToast(page, 'Placement updated');
+    await Promise.all([
+      waitForPlacementPatch(EDIT_1),
+      row.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
 
     expect(await db.ledgerBalance(floorKey)).toBeCloseTo(EDIT_1, 3);
     expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(Q - EDIT_1, 3);
 
     // ---- Edit #2: EDIT_1 -> EDIT_2 — the REPEATED edit that B-013 broke ----
     await qtyInput.fill(String(EDIT_2));
-    await row.getByRole('button', { name: 'Save', exact: true }).click();
-    await expectToast(page, 'Placement updated');
+    await Promise.all([
+      waitForPlacementPatch(EDIT_2),
+      row.getByRole('button', { name: 'Save', exact: true }).click(),
+    ]);
 
     expect(await db.ledgerBalance(floorKey)).toBeCloseTo(EDIT_2, 3);
     expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(Q - EDIT_2, 3);

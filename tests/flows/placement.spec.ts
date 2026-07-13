@@ -526,15 +526,22 @@ test(
     const floor2BalanceText = (await floor2BalanceCell.textContent()) ?? '';
     expect(Number.parseFloat(floor2BalanceText)).toBeCloseTo(floor2GroupBalance, 3);
 
-    // No "Awaiting placement" row left for THIS lot's (quality, sku) group —
-    // filtered the same way as step 2 (quality+sku, no location/floor), so
-    // the absence is actually witnessed by the Balance page, not excluded by
-    // construction. Cross-checked against the ledger group balance, which
-    // must now be exactly 0 (this lot's bucket fully drained; no other
-    // unplaced item exists for this quality+sku at this point in the suite).
-    await gotoAndExpect(page, `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}`);
+    // No "Awaiting placement" residue left for THIS lot specifically — scoped
+    // by lotNumber, not the whole (quality, sku) group. The Balance page
+    // (/inventory?qualityId=&skuId=) has no lotNumber filter (its query
+    // schema only takes qualityId/skuId/locationId/floorId/unit/jobWorkerId)
+    // and aggregates the bucket ACROSS every lot sharing this quality+sku, so
+    // a check there would break the moment another spec running later in the
+    // same serial suite legitimately leaves its OWN unplaced residue at the
+    // same quality+sku (this repo's vendor/quality/sku picks are all "first
+    // active" queries, so collisions across specs are the norm, not the
+    // exception — e.g. place-stock-transfer-sync.spec.ts's B-013 edit-twice
+    // test deliberately leaves 5kg unplaced). Use the Lots page instead
+    // (already proven lot-scoped above via ?lotNumber=), which is what
+    // "filter by lot text" concretely means here.
     expect(
       await db.ledgerBalance({
+        lotNumber: item!.lot_number,
         qualityId: quality!.id,
         skuId: sku!.id,
         locationId: null,
@@ -542,6 +549,9 @@ test(
         jobWorkerId: null,
       }),
     ).toBeCloseTo(0, 3);
-    await expect(page.getByRole('row').filter({ hasText: 'Awaiting placement' })).toHaveCount(0);
+    await gotoAndExpect(page, `/inventory/lots?lotNumber=${item!.lot_number}`);
+    await expect(
+      page.getByRole('row', { name: item!.lot_number }).filter({ hasText: 'Awaiting placement' }),
+    ).toHaveCount(0);
   },
 );
