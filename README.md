@@ -33,7 +33,7 @@ To run a single spec: `npm run e2e -- tests/flows/stock-transfer.spec.ts`.
 - `../fabtraq-be` and `../fabtraq-fe` dependencies installed (`npm ci` in each).
 - Chromium installed once: `npx playwright install chromium`.
 
-## ⚠️ Two things that will bite you
+## ⚠️ Three things that will bite you
 
 1. **The suite owns the ports.** `reuseExistingServer: false` — it starts its
    OWN BE/FE on `:4000`/`:5173`. If you already have `npm run dev` running in
@@ -41,6 +41,15 @@ To run a single spec: `npm run e2e -- tests/flows/stock-transfer.spec.ts`.
 2. **Every run reseeds `fabtraq_dev`.** `db:reset && db:seed` wipes the database.
    Don't run the suite against a DB whose contents you care about, and don't run
    it while doing manual dev work against the same DB.
+3. **The BE's `/auth/*` rate limit needs raising for a full run.** It defaults
+   to 100 req/15min (a production security setting, not a test budget), but
+   this suite is 69+ serial tests and every `gotoAndExpect` navigation
+   re-checks auth via `GET /auth/me` — cumulative calls blow through 100 well
+   before a full run finishes, and the FE bounces to `/login` on the
+   resulting 429s (looks exactly like an auth failure). `playwright.config.ts`
+   already sets `RATE_LIMIT_AUTH_MAX=2000` on the BE `webServer`'s env, so
+   `npm run e2e` handles this for you — only relevant if you're launching the
+   BE dev server some other way for manual/partial runs.
 
 ## Companion-repo branch requirement
 

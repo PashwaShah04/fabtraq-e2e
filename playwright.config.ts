@@ -41,6 +41,16 @@ export default defineConfig({
       timeout: 120_000,
       reuseExistingServer: false,
       stdout: 'pipe',
+      // The default /auth/* limit (100 req/15min, see fabtraq-be's
+      // rate-limit.ts) is a production security setting, not a test budget:
+      // this suite's 69+ serial tests each re-check auth via GET /auth/me on
+      // every gotoAndExpect navigation, which blows through 100 well before a
+      // full run finishes and bounces later tests to /login with a 429
+      // masquerading as unauthenticated (see README gotcha). Generous
+      // headroom for suite growth — tsx (fabtraq-be's dev runner) loads
+      // `.env` itself but never overrides a var already in process.env, so
+      // this always wins over whatever `.env` has.
+      env: { RATE_LIMIT_AUTH_MAX: '2000' },
     },
     {
       command: 'npm --prefix ../fabtraq-fe run dev',
