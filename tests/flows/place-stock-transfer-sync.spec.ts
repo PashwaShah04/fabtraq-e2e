@@ -319,3 +319,167 @@ test(
     expect(Number(minBalance?.min_bal ?? 0)).toBeGreaterThanOrEqual(-0.001);
   },
 );
+
+// ---------------------------------------------------------------------------
+// B-013 regression (fixed 2026-07-14, fabtraq-be commit a9b320d): editPlacement
+// used to scan ALL non-cancelled stock_ledger rows at the placement's own
+// (transactionType, old location, old floor) and cancel+rewrite every match
+// on EVERY edit. A cancellation row carries no marker distinguishing it from
+// a fresh forward row other than notes='cancellation', so a prior edit's own
+// rewritten row matched the very same scan on the NEXT edit — each edit
+// rewrote one row more than the last (1 -> 2 -> 4 -> 8...), duplicating the
+// floor leg geometrically while the placement row itself stayed correct
+// (confirmed live: one item had 33 ledger rows after 4 edits, floor net 900
+// vs a placement row of 400). The BE integration suite never exercised
+// REPEATED edits to the same placement — that's the gap this spec closes at
+// the UI level, driving the exact user-facing path (the inline quantity
+// input + Save button on an unlocked, non-stale placement row) rather than
+// hitting the API directly.
+// ---------------------------------------------------------------------------
+
+test(
+  'editing an unlocked, non-stale placement TWICE in a row keeps stock_ledger conservation at every step (B-013)',
+  async ({ page, db }) => {
+    const Q = 200;
+    const EDIT_1 = Q - 10; // 190
+    const EDIT_2 = Q - 5; // 195
+
+    const vendor = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM vendors WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(vendor, 'seed must provide at least one active vendor').not.toBeNull();
+
+    const quality = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM yarn_qualities WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(quality, 'seed must provide at least one active yarn quality').not.toBeNull();
+
+    const sku = await db.queryOne<{ id: string; name: string; shade_number: string | null }>(
+      `SELECT id, name, shade_number FROM yarn_skus
+       WHERE status = 'active' AND quality_id = $1
+       ORDER BY code LIMIT 1`,
+      [quality!.id],
+    );
+    expect(sku, 'seed must provide at least one active SKU for the chosen quality').not.toBeNull();
+
+    const location = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM locations WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(location, 'seed must provide at least one active location').not.toBeNull();
+
+    const floor = await db.queryOne<{ id: string; name: string }>(
+      `SELECT id, name FROM location_floors WHERE status = 'active' AND location_id = $1
+       ORDER BY name LIMIT 1`,
+      [location!.id],
+    );
+    expect(floor, 'seed must provide at least one active floor for the chosen location').not.toBeNull();
+
+    // Purchase Q with ZERO placements (mints a 'pending' item).
+    await gotoAndExpect(page, '/yarn-purchases/new');
+    await selectByAriaLabel(page, 'Select vendor', `${vendor!.code} – ${vendor!.name}`);
+    await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
+    const skuOptionLabel =
+      sku!.shade_number !== null && sku!.shade_number !== '' ? `${sku!.name} — ${sku!.shade_number}` : sku!.name;
+    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await fillByLabel(page, 'Quantity for line 1', String(Q));
+
+    await clickButton(page, 'Save purchase');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/yarn-purchases\/[^/]+$/);
+    const purchaseId = page.url().split('/').pop();
+
+    const item = await db.queryOne<{ id: string; lot_number: string }>(
+      `SELECT id, lot_number FROM yarn_purchase_items WHERE purchase_id = $1`,
+      [purchaseId],
+    );
+    expect(item, 'the created purchase must have exactly one item').not.toBeNull();
+
+    // Place ALL of Q on the floor — item becomes fully_placed; the resulting
+    // placement is unlocked (no downstream JW-Out) and not stale (no
+    // transfer has moved anything off this floor).
+    await gotoAndExpect(page, '/place-stock');
+    await page.getByRole('row', { name: item!.lot_number }).click();
+    await expect(page).toHaveURL(new RegExp(`/place-stock/yarn_purchase_item/${item!.id}$`));
+
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
+    await selectByAriaLabel(page, 'Select floor', floor!.name);
+    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await clickButton(page, 'Save Placements');
+    await expectToast(page, 'Stock placed successfully');
+    await expect(page).toHaveURL(/\/place-stock$/);
+
+    const placement = await db.queryOne<{ id: string }>(
+      `SELECT id FROM placements WHERE source_type = 'yarn_purchase_item' AND source_item_id = $1`,
+      [item!.id],
+    );
+    expect(placement, 'must have exactly one placement row for this item').not.toBeNull();
+    const placementId = placement!.id;
+
+    const floorKey = {
+      lotNumber: item!.lot_number,
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: location!.id,
+      floorId: floor!.id,
+      jobWorkerId: null,
+    };
+    const bucketKey = {
+      lotNumber: item!.lot_number,
+      qualityId: quality!.id,
+      skuId: sku!.id,
+      locationId: null,
+      floorId: null,
+      jobWorkerId: null,
+    };
+
+    expect(await db.ledgerBalance(floorKey)).toBeCloseTo(Q, 3);
+    expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(0, 3);
+
+    // Reopen the editor — the item is fully_placed so it's no longer in the
+    // queue list; navigate straight to the CF-6 detail route by id, which
+    // resolves regardless of placementStatus.
+    await gotoAndExpect(page, `/place-stock/yarn_purchase_item/${item!.id}`);
+
+    const row = page.locator('[aria-label="existing unlocked placement"]');
+    await expect(row).toBeVisible();
+    // Sanity: this row must be editable (unlocked, not stale) — the inline
+    // quantity input must be present, not a "Stock moved" badge / Stock
+    // Transfer link.
+    const qtyInput = row.locator(`[aria-label="existing placement quantity ${placementId}"]`);
+    await expect(qtyInput).toBeVisible();
+
+    // ---- Edit #1: Q -> EDIT_1 ----
+    await qtyInput.fill(String(EDIT_1));
+    await row.getByRole('button', { name: 'Save', exact: true }).click();
+    await expectToast(page, 'Placement updated');
+
+    expect(await db.ledgerBalance(floorKey)).toBeCloseTo(EDIT_1, 3);
+    expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(Q - EDIT_1, 3);
+
+    // ---- Edit #2: EDIT_1 -> EDIT_2 — the REPEATED edit that B-013 broke ----
+    await qtyInput.fill(String(EDIT_2));
+    await row.getByRole('button', { name: 'Save', exact: true }).click();
+    await expectToast(page, 'Placement updated');
+
+    expect(await db.ledgerBalance(floorKey)).toBeCloseTo(EDIT_2, 3);
+    expect(await db.ledgerBalance(bucketKey)).toBeCloseTo(Q - EDIT_2, 3);
+
+    // Whole-lot conservation holds after both edits (bucket + floor sum back
+    // to the original Q — nothing was consumed downstream in this test).
+    expect(await db.ledgerBalance({ lotNumber: item!.lot_number })).toBeCloseTo(Q, 3);
+
+    // Row-count guard mirroring the BE integration assertion (place-stock-
+    // ledger-wiring.service.test.ts): linear growth — 1 baseline (from
+    // addPlacements) + 1 per edit = 3 — NOT the geometric 1 -> 2 -> 4 the old
+    // scan-cancel-rewrite produced. This is the assertion that would have
+    // caught B-013 at the UI level.
+    const floorRowCount = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM stock_ledger
+       WHERE transaction_type = 'placement' AND location_id = $1 AND floor_id = $2
+         AND transaction_item_id = $3`,
+      [location!.id, floor!.id, item!.id],
+    );
+    expect(Number(floorRowCount?.n ?? '0')).toBe(3);
+  },
+);
