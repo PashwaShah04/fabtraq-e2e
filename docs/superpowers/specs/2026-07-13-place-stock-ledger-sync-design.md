@@ -56,6 +56,13 @@ workstream): stock-transfer SKU drop, free-text lot, missing on-hand validation
    ledger balance (from #4) is `< placement.quantity − 0.001` renders a
    "Stock moved — no longer (fully) on this floor" badge and its inline edit form
    is disabled, replaced by a link to Stock Transfer. Both-branch tests required.
+   *Implementation amendments (accepted 2026-07-13, commit 204d2d5):*
+   (a) LOCKED rows are exempt from the stale badge — locked already means
+   "consumed by JW-Out" (which explains the lowered balance) and locked rows
+   have no edit form, which is this clause's operative trigger; (b) staleness
+   and the panel's content are gated on the ledger query having fully settled
+   (not loading/errored/placeholder) — prevents a transient false-positive
+   found during testing.
 6. **BE — edit guard:** `editPlacement` must not drive any (lot, floor) ledger
    balance negative. Before rewriting legs, assert in-tx via
    `findLotLocationBalance`: balance at the OLD floor must cover the reversed
