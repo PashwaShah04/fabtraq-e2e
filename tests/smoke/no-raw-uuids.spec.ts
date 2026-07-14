@@ -25,6 +25,11 @@ import { gotoAndExpect } from '../../support/nav';
 //   exactly that failure mode).
 // ---------------------------------------------------------------------------
 
+// Used only for href shape-matching (collectUuidHrefPaths/shapeOf) — a
+// route path can only ever contain a FULL id, never the app's truncated
+// display fallback, so this stays full-UUID-only. The rendered-content
+// scan (findRawUuids) uses a wider pattern that also catches truncation;
+// see the comment inside that function for why.
 const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
 const UUID_RE_GLOBAL = new RegExp(UUID_RE.source, 'gi');
 
@@ -74,13 +79,21 @@ interface UuidHit {
  * Walks the live DOM in-browser: visible text nodes (skipping
  * display:none/visibility:hidden ancestors and script/style/noscript
  * content, which isn't rendered to the user) plus the `.value` of any
- * non-hidden, non-hidden-styled input/textarea. Returns every match of the
- * raw-UUID pattern found, each with enough context to locate it from the
- * failure message alone.
+ * non-hidden, non-hidden-styled input/textarea. Returns every match of a
+ * raw id — full UUID or the app's truncated `slice(0,8)+'…'` display
+ * fallback — found, each with enough context to locate it from the failure
+ * message alone.
  */
 async function findRawUuids(page: Page): Promise<UuidHit[]> {
   return page.evaluate(() => {
-    const uuidRe = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+    // Full UUID OR 8 hex chars immediately followed by the ellipsis char
+    // (the app's slice(0,8)+'…' truncated-id signature) — both are equally
+    // a "raw id leaked instead of a resolved name" bug, kept as one
+    // alternation. Defined inline (not at module scope) because
+    // page.evaluate() runs in the browser and can't close over the outer
+    // module's values.
+    const uuidRe =
+      /(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})|(?:\b[0-9a-f]{8}\b…)/i;
     const skipTags = new Set(['SCRIPT', 'STYLE', 'NOSCRIPT']);
     const hits: { context: string; tag: string }[] = [];
 
