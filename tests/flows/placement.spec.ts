@@ -71,8 +71,8 @@ test(
     );
     expect(quality, 'seed must provide at least one active yarn quality').not.toBeNull();
 
-    const sku = await db.queryOne<{ id: string; name: string; shade_number: string | null }>(
-      `SELECT id, name, shade_number FROM yarn_skus
+    const sku = await db.queryOne<{ id: string; code: string; name: string; shade_number: string | null }>(
+      `SELECT id, code, name, shade_number FROM yarn_skus
        WHERE status = 'active' AND quality_id = $1
        ORDER BY code LIMIT 1`,
       [quality!.id],
@@ -118,11 +118,21 @@ test(
     expect(item!.placement_status).toBe('pending');
 
     // QUEUE — the item must be visible and clickable through to the editor.
+    // Its row's Lot / Quality / SKU column shows the SKU as "<name> (<code>)"
+    // resolved from the live /qualities/:id/skus list — the same SKU the
+    // purchase above was created with, so this is a real cross-check, not an
+    // echo of UI input.
     await gotoAndExpect(page, '/place-stock');
+    await expect(page.getByRole('row', { name: item!.lot_number })).toContainText(
+      `${sku!.name} (${sku!.code})`,
+    );
     await page.getByRole('row', { name: item!.lot_number }).click();
     await expect(page).toHaveURL(new RegExp(`/place-stock/yarn_purchase_item/${item!.id}$`));
 
-    // EDITOR — add a placement covering the full unplaced quantity, on the
+    // EDITOR — the item summary strip shows the same resolved SKU…
+    await expect(page.getByText(`${sku!.name} (${sku!.code})`)).toBeVisible();
+
+    // …then add a placement covering the full unplaced quantity, on the
     // chosen location/floor.
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
