@@ -282,7 +282,6 @@ test(
       .click();
 
     await fillByLabel(page, 'beam number, items.0', beamNumber);
-    await fillByLabel(page, 'net weight, items.0', '30');
 
     await page
       .getByRole('group', { name: 'composition mode' })
@@ -292,6 +291,16 @@ test(
 
     await expect(page.getByRole('radiogroup', { name: 'colour-way' })).toBeVisible();
     await page.getByRole('radio', { name: 'Colour-way 2', exact: false }).click();
+
+    // Net weight is DELIBERATELY typed after the design + colour-way pick,
+    // keystroke by keystroke (pressSequentially, NOT fill — fill sets the
+    // value in one input event and can't reproduce this) — regression for the
+    // 2026-07-18 bug where the prefill guard keyed on `netWeight > 0` and
+    // froze every target quantity at the value computed from the FIRST
+    // positive keystroke ('3' of '30'), never rescaling to the full figure.
+    const netWeightInput = page.getByLabel('net weight, items.0', { exact: false });
+    await netWeightInput.click();
+    await netWeightInput.pressSequentially('30');
 
     // One composition line per warp group, quantity pre-filled by
     // distributeByWeight(netWeight, warpWeights) — read + assert against
