@@ -77,7 +77,7 @@ function sourceRowLocator(page: Page, sourceIndex: number): Locator {
 }
 
 test(
-  'PDF import maps a design with colour-ways, then a colour-way-2 beam drains the exact per-group ledger positions',
+  'PDF import maps a design with colour-ways, then a colour-way-2 beam drains the exact per-group ledger positions, with warp A split across two lots',
   async ({ page, db }) => {
     const uniqueSuffix = Date.now();
     const designName = `E2E Design v2 ${uniqueSuffix}`;
@@ -234,12 +234,23 @@ test(
     // challan_out tagged with a job_worker_id but a REAL floor_id, so its true
     // balance is 3kg, not 47).
     const excluded: { lotNumber: string; floorId: string }[] = [];
-    async function pickPosition(minBalance: number): Promise<SourcePos> {
+    async function pickPosition(
+      minBalance: number,
+      // Lot NUMBERS to exclude wholesale (any floor) — used by warp A's
+      // second pull so the nested-model split provably spans two distinct
+      // lots rather than two floors of one lot.
+      excludeLotNumbers: readonly string[] = [],
+    ): Promise<SourcePos> {
       const excludeClauses = excluded
         .map((_, i) => `NOT (sl.lot_number = $${4 + i * 2} AND sl.floor_id = $${5 + i * 2})`)
         .join(' AND ');
+      const lotExclusionClause =
+        excludeLotNumbers.length > 0
+          ? `AND sl.lot_number <> ALL($${4 + excluded.length * 2})`
+          : '';
       const params: unknown[] = [quality!.id, sku!.id, minBalance];
       for (const e of excluded) params.push(e.lotNumber, e.floorId);
+      if (excludeLotNumbers.length > 0) params.push([...excludeLotNumbers]);
       const row = await db.queryOne<{
         lot_number: string;
         floor_id: string;
@@ -255,6 +266,7 @@ test(
          WHERE sl.quality_id = $1 AND sl.sku_id = $2
            AND l.status = 'active' AND f.status = 'active'
            ${excluded.length > 0 ? `AND ${excludeClauses}` : ''}
+           ${lotExclusionClause}
          GROUP BY sl.lot_number, f.id, f.name, l.id, l.name
          HAVING SUM(sl.in_quantity - sl.out_quantity) >= $3
          ORDER BY SUM(sl.in_quantity - sl.out_quantity) DESC
@@ -318,35 +330,84 @@ test(
     // processing largest-requirement-first still reserves the biggest lot
     // for warp A.
     const MARGIN_KG = 20;
-    const positions: Partial<Record<'A' | 'B' | 'C' | 'D', SourcePos>> = {};
-    const byRequirementDesc = [...WARP_ORDER].sort(
-      (a, b) => EXPECTED_QTY[b] - EXPECTED_QTY[a],
-    );
-    for (const label of byRequirementDesc) {
+
+    // Card targets prefill straight from distributeByWeight — assert all 4
+    // BEFORE driving any pulls (the nested-model rework must not change them).
+    for (const label of WARP_ORDER) {
       const i = WARP_ORDER.indexOf(label);
-      const sourceLabel = `source ${i + 1}`;
-      const qty = EXPECTED_QTY[label];
-
-      const targetInput = page.getByLabel(`${sourceLabel} target quantity`, { exact: false });
-      await expect(targetInput).toBeVisible();
-      const targetValue = Number.parseFloat((await targetInput.inputValue()) || '0');
-      expect(targetValue).toBeCloseTo(qty, 3);
-
-      const pos = await pickPosition(qty + MARGIN_KG);
-      positions[label] = pos;
-
-      await selectByAriaLabel(page, `source lot for ${sourceLabel}`, pos.lotNumber);
-
-      const row = sourceRowLocator(page, i);
-      await row.getByRole('button', { name: 'Add placement', exact: false }).click();
-      await row.locator('[aria-label="Select floor and location"]').click();
-      await page
-        .getByRole('option', { name: `${pos.locationName} · ${pos.floorName}` })
-        .click();
-      await row.getByLabel('placement quantity 1', { exact: false }).fill(String(qty));
+      const cardInput = page.getByLabel(`source ${i + 1} target quantity`, { exact: false });
+      await expect(cardInput).toBeVisible();
+      expect(Number.parseFloat((await cardInput.inputValue()) || '0')).toBeCloseTo(
+        EXPECTED_QTY[label],
+        3,
+      );
     }
 
-    // Sum of the 4 lines must equal netWeight exactly (distributeByWeight's
+    // ── STEP 4b: split source 1 (warp A) across TWO lots via "+ Add lot"
+    // (nested multi-lot model, spec 2026-07-19): lot 1 takes a manual
+    // 10.000 kg sub-target, lot 2 the remaining 4.816. B/C/D stay
+    // single-lot (their prefilled sub-target ≡ card target, N4). Pulls are
+    // processed largest-requirement-first (same lot-reservation logic as
+    // before); warp A's second pull excludes lot 1's lot NUMBER wholesale so
+    // the split provably spans two distinct lots, not two floors of one lot.
+    const A_LOT1_QTY = 10;
+    const A_LOT2_QTY = Math.round((EXPECTED_QTY.A - A_LOT1_QTY) * 1000) / 1000; // 4.816
+
+    await page.getByRole('button', { name: 'add lot to source 1', exact: true }).click();
+
+    interface Pull {
+      readonly label: 'A' | 'B' | 'C' | 'D';
+      readonly lotIndex: 0 | 1;
+      readonly qty: number;
+    }
+    const pulls: readonly Pull[] = [
+      { label: 'A', lotIndex: 0, qty: A_LOT1_QTY },
+      { label: 'A', lotIndex: 1, qty: A_LOT2_QTY },
+      { label: 'B', lotIndex: 0, qty: EXPECTED_QTY.B },
+      { label: 'C', lotIndex: 0, qty: EXPECTED_QTY.C },
+      { label: 'D', lotIndex: 0, qty: EXPECTED_QTY.D },
+    ];
+
+    const positions = new Map<string, SourcePos>(); // key `${label}:${lotIndex}`
+    const byRequirementDesc = [...pulls].sort((a, b) => b.qty - a.qty);
+    for (const pull of byRequirementDesc) {
+      const i = WARP_ORDER.indexOf(pull.label);
+      const sourceLabel = `source ${i + 1}`;
+      const row = sourceRowLocator(page, i);
+
+      const excludeLots =
+        pull.label === 'A' && pull.lotIndex === 1 ? [positions.get('A:0')!.lotNumber] : [];
+      const pos = await pickPosition(pull.qty + MARGIN_KG, excludeLots);
+      positions.set(`${pull.label}:${pull.lotIndex}`, pos);
+
+      const lotAria =
+        pull.lotIndex === 0
+          ? `source lot for ${sourceLabel}`
+          : `source lot ${pull.lotIndex + 1} for ${sourceLabel}`;
+      await selectByAriaLabel(page, lotAria, pos.lotNumber);
+
+      // Split card only: set each lot section's manual sub-target.
+      if (pull.label === 'A') {
+        await fillByLabel(
+          page,
+          `lot ${pull.lotIndex + 1} target for ${sourceLabel}`,
+          String(pull.qty),
+        );
+      }
+
+      // Lot sections are the dashed-border blocks inside the card, in order.
+      const section = row.locator('div.border-dashed').nth(pull.lotIndex);
+      await section.getByRole('button', { name: 'Add placement', exact: false }).click();
+      await section.locator('[aria-label="Select floor and location"]').click();
+      await page.getByRole('option', { name: `${pos.locationName} · ${pos.floorName}` }).click();
+      await section.getByLabel('placement quantity 1', { exact: false }).fill(String(pull.qty));
+    }
+
+    // The split card's allocation line must show the sub-targets summing
+    // exactly to the card target (10.000 + 4.816 = 14.816).
+    await expect(page.getByLabel('source 1 allocation')).toContainText('14.816 / 14.816');
+
+    // Sum of all placements must equal netWeight exactly (distributeByWeight's
     // own invariant) — cross-check via the conservation bar rather than
     // re-summing in JS, so this is a real read of the rendered UI.
     await expect(page.getByLabel('placement conservation').first()).toContainText('Balanced');
@@ -358,24 +419,35 @@ test(
     // drain row we're about to write also lands at this exact key, so an
     // unfiltered read is the one that matches what the app itself enforces
     // and what the delta below actually measures.
-    const ledgerKeys = WARP_ORDER.map((label) => ({
-      qualityId: quality!.id,
-      skuId: sku!.id,
-      lotNumber: positions[label]!.lotNumber,
-      locationId: positions[label]!.locationId,
-      floorId: positions[label]!.floorId,
-    }));
-    const before = await Promise.all(ledgerKeys.map((k) => db.ledgerBalance(k)));
+    const pullEntries = pulls.map((pull) => {
+      const pos = positions.get(`${pull.label}:${pull.lotIndex}`)!;
+      return {
+        pull,
+        key: {
+          qualityId: quality!.id,
+          skuId: sku!.id,
+          lotNumber: pos.lotNumber,
+          locationId: pos.locationId,
+          floorId: pos.floorId,
+        },
+      };
+    });
+    const before = await Promise.all(pullEntries.map((e) => db.ledgerBalance(e.key)));
 
     await clickButton(page, 'Save beam receipt');
     await expectToast(page, /^Saved /);
     await expect(page).toHaveURL(/\/beam-receipts\/[^/]+$/);
 
-    // ── STEP 5: ledger oracle — each line drained exactly its own quantity ───
-    const after = await Promise.all(ledgerKeys.map((k) => db.ledgerBalance(k)));
-    WARP_ORDER.forEach((label, i) => {
-      expect(after[i] - before[i]).toBeCloseTo(-EXPECTED_QTY[label], 3);
+    // ── STEP 5: ledger oracle — each pull drained exactly its own quantity,
+    // including BOTH halves of warp A's two-lot split ───
+    const after = await Promise.all(pullEntries.map((e) => db.ledgerBalance(e.key)));
+    pullEntries.forEach((e, i) => {
+      expect(after[i] - before[i]).toBeCloseTo(-e.pull.qty, 3);
     });
+
+    // The two warp-A pulls landed in two DISTINCT lots — the nested model's
+    // whole point.
+    expect(positions.get('A:0')!.lotNumber).not.toBe(positions.get('A:1')!.lotNumber);
 
     const beamItem = await db.queryOne<{ colourway_id: string; design_id: string }>(
       `SELECT colourway_id, design_id FROM beam_receipt_items WHERE beam_number = $1`,
