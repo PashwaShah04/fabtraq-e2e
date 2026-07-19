@@ -449,6 +449,18 @@ test(
     // whole point.
     expect(positions.get('A:0')!.lotNumber).not.toBe(positions.get('A:1')!.lotNumber);
 
+    // ── STEP 6: display denormalizations (2026-07-19 fixes) ─────────────────
+    // Receipt detail shows the design NAME (mapper previously hardcoded
+    // designName: null, so this field rendered blank for every design beam).
+    await expect(page.getByText(designName)).toBeVisible();
+
+    // Beam register row derives its Quality from the composition's quality
+    // names (in_house beams have no operator-typed qualityText).
+    await gotoAndExpect(page, '/beams');
+    const registerRow = page.getByRole('row', { name: new RegExp(beamNumber) });
+    await expect(registerRow).toBeVisible();
+    await expect(registerRow).toContainText(quality!.name);
+
     const beamItem = await db.queryOne<{ colourway_id: string; design_id: string }>(
       `SELECT colourway_id, design_id FROM beam_receipt_items WHERE beam_number = $1`,
       [beamNumber],
