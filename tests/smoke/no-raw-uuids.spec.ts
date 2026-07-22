@@ -168,6 +168,11 @@ function shapeOf(path: string): string {
 }
 
 test('no raw UUID is ever rendered as visible text or a visible field value', async ({ page, db }) => {
+  // This single test sweeps 40+ route shapes with a networkidle wait each;
+  // it fits the default 60s solo (~37s) but has twice exceeded it under
+  // full-suite dev-server load. Triple the budget — the timeout protects
+  // against a hung page, not sweep breadth.
+  test.setTimeout(180_000);
   const discoveredByShape = new Map<string, string>();
   const violations: Array<{ route: string; hits: UuidHit[] }> = [];
 

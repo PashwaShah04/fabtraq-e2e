@@ -534,12 +534,17 @@ test(
     // here if any job-worked stock of this quality+sku also happened to sit
     // on the same floor — this item is raw, and the page is scoped to
     // `state=raw`, so the oracle must be scoped the same way.
+    // No job_worker_id predicate: a located row IS a floor row (BE
+    // position-custody normalization) — challan-out floor-DEBIT legs carry
+    // the destination job_worker_id as provenance and must still net against
+    // this floor, or the oracle re-creates the very overstatement the BE fix
+    // removed (seeded First Floor carries such legs).
     const rawFloorBalance = async (floorId: string): Promise<number> => {
       const row = await db.queryOne<{ bal: string | null }>(
         `SELECT COALESCE(SUM(in_quantity - out_quantity), 0)::text AS bal
          FROM stock_ledger
          WHERE quality_id = $1 AND sku_id = $2 AND location_id = $3 AND floor_id = $4
-           AND job_worker_id IS NULL AND processed_types = '{}'`,
+           AND processed_types = '{}'`,
         [quality!.id, sku!.id, location!.id, floorId],
       );
       return Number(row?.bal ?? 0);
