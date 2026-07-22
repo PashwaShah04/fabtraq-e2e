@@ -34,19 +34,14 @@ import { gotoAndExpect } from '../../support/nav';
 // ([[feedback_compute_in_app_not_db]]) and the BE's own `fetchPositions`
 // approach — immune to whatever affects SQL-level array grouping.
 //
-// A REAL, PRE-EXISTING BE BUG WAS FOUND while building this oracle (reported
-// separately, out of scope here — see task report): some positions with a
-// later DEBIT transaction (`out_quantity > 0`, e.g. `challan_out`) are
-// overstated by `GET /inventory` (and therefore `/inventory/summary` and
-// `/inventory/positions`, which read the same accumulation). Verified live
-// via direct Prisma query + API call: `stock_ledger` for one exact position
-// summed 250 (purchase) − 80 − 60 (challan_out) = 110kg, but the BE
-// consistently returned 250kg for that same position. This predates and is
-// independent of B-015 (the position-level `/inventory` endpoint wasn't
-// touched by the redesign). Rather than block on it or paper over it,
-// candidate selection below requires NO debit history on the chosen
-// stock item's in-house positions, so this spec exercises a stock item the
-// bug doesn't affect.
+// CUSTODY NORMALIZATION (position-custody.ts, fixed during B-015): challan-out
+// writes its floor DEBIT leg with the destination job_worker_id stamped on as
+// provenance while keeping the source location/floor. The BE normalizes
+// jobWorkerId to null for any located row before grouping (a located row IS a
+// floor position — L4), so those debits net against the floor's credits
+// instead of splitting into a dropped hybrid bucket (the pre-fix behavior
+// overstated a 250−60−80=110 position as 250). The oracle below applies the
+// SAME normalization, so debit-history stock items are deliberately IN scope.
 //
 // ROW SELECTION — the redesigned overview has no SKU/location/floor filter
 // (D3: only quality/unit/state), so a single quality can render several
@@ -87,7 +82,6 @@ interface PositionAccum {
   processedTypes: string[];
   unit: string;
   balance: number;
-  hasDebit: boolean;
 }
 
 interface StockItemGroup {
@@ -101,8 +95,6 @@ interface StockItemGroup {
   inHouseBalance: number;
   atJobWorkerBalance: number;
   awaitingPlacementBalance: number;
-  /** Whether ANY in-house position in this group has ever had a debit (out_quantity > 0) row. */
-  inHouseHasDebit: boolean;
 }
 
 const RAW_STATE = 'raw';
@@ -157,12 +149,16 @@ test('overview row matches the ledger rollup for its stock item; positions detai
   const positionMap = new Map<string, PositionAccum>();
   for (const r of rawRows) {
     const canonical = canonicalProcessedTypes(r.processed_types);
+    // Custody normalization, mirroring the BE's position-custody.ts: a located
+    // row is a floor position; job_worker_id on it is provenance, not position.
+    const jobWorkerId = r.location_id !== null ? null : r.job_worker_id;
+    const jobWorkerName = r.location_id !== null ? null : r.job_worker_name;
     const key = [
       r.quality_id,
       r.sku_id ?? '∅',
       r.location_id ?? '∅',
       r.floor_id ?? '∅',
-      r.job_worker_id ?? '∅',
+      jobWorkerId ?? '∅',
       r.unit,
       canonical.join(','),
     ].join('\x00');
@@ -177,18 +173,15 @@ test('overview row matches the ledger rollup for its stock item; positions detai
         locationName: r.location_name,
         floorId: r.floor_id,
         floorName: r.floor_name,
-        jobWorkerId: r.job_worker_id,
-        jobWorkerName: r.job_worker_name,
+        jobWorkerId,
+        jobWorkerName,
         processedTypes: canonical,
         unit: r.unit,
         balance: 0,
-        hasDebit: false,
       };
       positionMap.set(key, p);
     }
-    const outQty = Number(r.out_quantity);
-    p.balance += Number(r.in_quantity) - outQty;
-    if (outQty > 0) p.hasDebit = true;
+    p.balance += Number(r.in_quantity) - Number(r.out_quantity);
   }
   const positions = [...positionMap.values()].filter((p) => p.balance > 0);
   expect(positions.length, 'seed must provide at least one positive-balance position').toBeGreaterThan(0);
@@ -211,14 +204,12 @@ test('overview row matches the ledger rollup for its stock item; positions detai
         inHouseBalance: 0,
         atJobWorkerBalance: 0,
         awaitingPlacementBalance: 0,
-        inHouseHasDebit: false,
       };
       groups.set(key, g);
     }
     g.totalBalance += p.balance;
     if (p.locationId !== null) {
       g.inHouseBalance += p.balance;
-      if (p.hasDebit) g.inHouseHasDebit = true;
     } else if (p.jobWorkerId !== null) {
       g.atJobWorkerBalance += p.balance;
     } else {
@@ -242,13 +233,11 @@ test('overview row matches the ledger rollup for its stock item; positions detai
     states.add(p.processedTypes.join(','));
   }
 
-  // Pick a group with an in-house component, no floor-sharing contamination,
-  // and no in-house debit history (see the top-of-file BE-bug note),
+  // Pick a group with an in-house component and no floor-sharing contamination,
   // deterministically (largest total balance), so step 3 has a concrete
   // "In factory" row to assert.
   const candidate = [...groups.values()]
     .filter((g) => g.inHouseBalance > 0)
-    .filter((g) => !g.inHouseHasDebit)
     .filter((g) => {
       const itemKey = [g.qualityId, g.skuId ?? '∅', g.unit].join('\x00');
       return (inHouseStatesByItem.get(itemKey)?.size ?? 0) === 1;
@@ -256,7 +245,7 @@ test('overview row matches the ledger rollup for its stock item; positions detai
     .sort((a, b) => b.totalBalance - a.totalBalance)[0];
   expect(
     candidate,
-    'seed must provide an undisturbed (no floor-sharing, no debit history) in-house stock-item group',
+    'seed must provide an undisturbed (no floor-sharing) in-house stock-item group',
   ).not.toBeUndefined();
 
   // Concrete (location, floor) position inside that group, for the "In
