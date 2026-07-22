@@ -8,14 +8,18 @@ import {
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 
-// JW Challan In "dyed" — CONSOLIDATED FORM (spec 2026-07-22). "Dyed" is not a
-// route or a picker choice anymore: there is no Processed Types input at all
-// (D2 — the BE derives state from the source's prior processedTypes ∪ the
-// work-done chips, which default ticked). What makes a receipt "dyed" is
-// purely that its source OUT declared 'dyeing'. The Shade No cell in the
-// received-lots grid (aria `shade, lots.N`) stays DISABLED until the derived
-// state includes dyeing — i.e. until a dyeing source is picked in Section B —
-// and is required from then on (BE-enforced, derived-dyeing rule).
+// JW Challan In "dyed" — PER-LOT SOURCES FORM (spec 2026-07-23, supersedes
+// the 2026-07-22 consolidated-form spec's Section B/allocator/Place
+// expander). "Dyed" is not a route or a picker choice: there is no Processed
+// Types input at all (D2 — the BE derives state from each source's prior
+// processedTypes ∪ the work-done chips, which default ticked). What makes a
+// receipt "dyed" is purely that its source OUT declared 'dyeing'. The Shade
+// No cell in the received-lots grid (aria `shade, lots.N`) stays DISABLED
+// until the derived state includes dyeing — i.e. until a dyeing source is
+// picked under that lot's group in Section B (`source, lots.N.sources.J`) —
+// and is required from then on (BE-enforced, derived-dyeing rule). Section C
+// ("Place stock") is an ALWAYS-VISIBLE region per lot (`place stock,
+// lots.N`) — no click-to-reveal toggle anymore.
 //
 // Ledger contract is identical to jw-in-yarn.spec.ts (same
 // applyChallanInYarnLedger, same two legs); 'dyed' changes only the
@@ -133,14 +137,15 @@ test(
     await fillByLabel(page, 'net weight, lots.0', String(Q));
     await expect(page.getByLabel('shade, lots.0')).toBeDisabled();
 
-    // Section B — pick the dyeing OUT item; consumed = Q, wastage auto (0).
-    await clickButton(page, 'Add source');
-    await clickButton(page, 'Pick eligible out item');
+    // Section B — grouped by lot: add a source row under lot 0, pick the
+    // dyeing OUT item; consumed = Q, wastage auto (0).
+    await page.getByLabel('add source, lots.0').click();
+    await page.getByLabel('source, lots.0.sources.0').click();
     await fillByLabel(page, 'Search OUT challan no', outChallanNo);
     const eligibleOption = page.getByRole('option', { name: outChallanNo });
     await expect(eligibleOption).toBeVisible();
     await eligibleOption.click();
-    await fillByLabel(page, 'consumed quantity, pulls.0', String(Q));
+    await fillByLabel(page, 'consumed quantity, lots.0.sources.0', String(Q));
 
     // Derived state now includes dyeing (Dyeing chip default-ticked) → the
     // shade cell enables and is required.
@@ -148,8 +153,8 @@ test(
     await expect(shadeCell).toBeEnabled();
     await shadeCell.fill(shadeNo);
 
-    // Place the full quantity via the per-lot expander (D6).
-    await page.getByLabel('place stock, lots.0').click();
+    // Place the full quantity via the always-visible Place-stock region (no
+    // click-to-reveal expander anymore).
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(
       page,
