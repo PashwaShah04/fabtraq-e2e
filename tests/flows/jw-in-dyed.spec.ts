@@ -8,48 +8,29 @@ import {
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 
-// JW Challan In "dyed" is NOT a separate route/form — router.tsx redirects
-// /jw-challans-in/new/dyed → /jw-challans-in/new/yarn (Navigate replace). "Dyed" is
-// represented entirely within the yarn form: YarnLineRow.tsx derives
-// `isDyed = processedTypes.includes('dyeing')` from the same JobWorkTypeMultiSelect
-// used for twisting/gassing, and conditionally renders a required "Shade No" input
-// (shadeNo, aria-label `shade number, yarn lot ${n}`) — enforced by the shared zod
-// schema (jw-challan-in.ts: shadeNo required when processedTypes includes 'dyeing').
-// Multi-source (YarnLineSourceSubTable / EligibleOutItemSourcePicker) is the SAME
-// component regardless of processed type — per memory the dyed-only multi-source
-// gate was lifted, so combining sources is no longer what distinguishes "dyed" from
-// Task 13's plain yarn receipt. This spec isolates the dyed-specific behavior
-// (processedTypes=['dyeing'] + shadeNo) with the SAME single-source topology as
-// Task 13, so the only material diff between the two specs is the processed type —
-// keeping the two-sided ledger delta assertion clean and non-tautological.
+// JW Challan In "dyed" — CONSOLIDATED FORM (spec 2026-07-22). "Dyed" is not a
+// route or a picker choice anymore: there is no Processed Types input at all
+// (D2 — the BE derives state from the source's prior processedTypes ∪ the
+// work-done chips, which default ticked). What makes a receipt "dyed" is
+// purely that its source OUT declared 'dyeing'. The Shade No cell in the
+// received-lots grid (aria `shade, lots.N`) stays DISABLED until the derived
+// state includes dyeing — i.e. until a dyeing source is picked in Section B —
+// and is required from then on (BE-enforced, derived-dyeing rule).
 //
-// Ledger: applyChallanInYarnLedger (prisma-inventory.service.ts) is the ONE ledger
-// function for both plain and dyed yarn receipts — there is no separate "dyed"
-// ledger path. It writes the same two legs as jw-in-yarn.spec.ts documents:
-//   Leg A (JW-debit) keyed on { lotNumber: src.sourceLotNumber, skuId, qualityId,
-//     locationId: null, floorId: null, jobWorkerId: src.jobWorkerId } — drains the
-//     position the prerequisite JW-Out opened.
-//   Leg B (floor-credit) keyed on { lotNumber: <fresh minted lot>, skuId, qualityId,
-//     locationId, floorId, jobWorkerId: null } — credits the receiving floor.
-// isValidInputState (fabtraq-shared primitives/job-work.ts) confirms a raw lot
-// (processedTypes=[]) is valid input for 'dyeing' (predicate: !P.has('dyeing') &&
-// !beam-intersect), so the same raw-lot / job-worker prerequisite pattern used by
-// jw-in-yarn.spec.ts for 'twisting' works unchanged for 'dyeing' — job workers carry
-// no capability gate (jw-challan-out.service.ts only checks existence + active
-// status), and no seeded JW-out to a dyeing job worker is left outstanding (the
-// seed's own dyed M:N scenario, JW-002/"Rang Rang Dyeworks", is fully_received), so
-// this spec opens its own at-job-worker position first, same as Task 13.
-
+// Ledger contract is identical to jw-in-yarn.spec.ts (same
+// applyChallanInYarnLedger, same two legs); 'dyed' changes only the
+// processedTypes value written into Leg B.
 test(
-  '/jw-challans-in/new/dyed redirects to the yarn form (dyed is not a separate route)',
+  '/jw-challans-in/new/dyed redirects to the consolidated form (dyed is not a separate route)',
   async ({ page }) => {
     await page.goto('/jw-challans-in/new/dyed');
-    await expect(page).toHaveURL(/\/jw-challans-in\/new\/yarn/);
+    await expect(page).toHaveURL(/\/jw-challans-in\/new$/);
+    await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
   },
 );
 
 test(
-  'JW challan-in dyed (processed) receipt drains the at-job-worker position and credits a receiving floor with a two-sided ledger delta',
+  'JW challan-in dyed receipt derives the dyed state from its source, requires shade, and moves the two-sided ledger delta',
   async ({ page, db }) => {
     const Q = 10;
     const shadeNo = 'SHADE-E2E-01';
@@ -59,9 +40,6 @@ test(
     );
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
-    // Raw lot (unprocessed, cardinality(processed_types)=0) — isValidInputState
-    // confirms this is valid input for 'dyeing' too (same predicate shape as
-    // 'twisting'/'gassing': not-already-dyed, not a beam-stage lot).
     const src = await db.queryOne<{
       lot_number: string;
       sku_id: string;
@@ -103,8 +81,6 @@ test(
         ? `${src!.sku_name} — ${src!.sku_shade_number}`
         : src!.sku_name;
 
-    // Receiving floor DISTINCT from the source floor (jw-in-yarn.spec.ts pattern) so
-    // the floor-credit leg's "before" balance is unambiguous.
     const receivingFloor = await db.queryOne<{
       loc_code: string;
       loc_name: string;
@@ -119,24 +95,11 @@ test(
     );
     expect(receivingFloor, 'seed must provide a second active floor to receive into').not.toBeNull();
 
-    // ── Step 0: open an at-job-worker position via JW-Challan-Out, requesting
-    //    'dyeing' (not 'twisting') as the job-work type — this is the outstanding
-    //    JW-out this dyed receipt receives against. No seeded outstanding dyeing
-    //    JW-out is available (seed's dyed scenario is fully_received), so drive it
-    //    inline, same as jw-in-yarn.spec.ts does for the plain yarn case.
+    // ── Step 0: open an at-job-worker position via JW-Challan-Out declaring
+    //    'dyeing'. getByRole (not getByLabel) — the outer Operations <label>
+    //    wraps the whole multi-select group (known FE quirk, task-14-report.md).
     await gotoAndExpect(page, '/jw-challans-out/new');
     await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
-    // NOTE (real FE bug, reported not fixed — see task-14-report.md): on this form,
-    // jw-challan-out-form.page.tsx's `Field` wraps its children in a <label>, so the
-    // "Operations *" field's outer <label> wraps the ENTIRE JobWorkTypeMultiSelect
-    // group (all 6 option <label>s nested inside it). That outer label's aggregated
-    // text therefore contains every option's text, including "Dyeing"; since it has
-    // no htmlFor, its implicit target is the FIRST control inside it (the "Twisting"
-    // checkbox). getByLabel('Dyeing') naively matches both the correct inner label
-    // ("Dyeing" → jwt-dyeing) AND that outer label (whose text also contains
-    // "Dyeing", implicitly targeting jwt-twisting) → strict-mode violation (2
-    // elements). getByRole('checkbox', { name: 'Dyeing' }) uses real accessible-name
-    // computation and is unambiguous, so it's used here instead.
     await page.getByRole('checkbox', { name: 'Dyeing', exact: true }).check();
     await selectByAriaLabel(
       page,
@@ -158,38 +121,33 @@ test(
     await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
     const outChallanNo = await captureDocNo(page.getByRole('main'), /\bJWO-\d{4}-\d{2}-\d{3,}\b/);
 
-    // ── Step 1: JW-Challan-In via the "dyed" entry point — redirected to the same
-    //    yarn form Task 13 uses (asserted standalone above; re-confirmed here as
-    //    part of the real navigation path).
+    // ── Step 1: the "dyed" entry point redirects into the one consolidated form.
     await page.goto('/jw-challans-in/new/dyed');
-    await expect(page).toHaveURL(/\/jw-challans-in\/new\/yarn$/);
+    await expect(page).toHaveURL(/\/jw-challans-in\/new$/);
 
-    await clickButton(page, 'Add yarn lot');
-
-    await selectByAriaLabel(page, 'quality, yarn lot 1', `${src!.quality_code} – ${src!.quality_name}`);
+    // Section A identity — shade stays disabled until a dyeing source is picked.
+    await selectByAriaLabel(page, 'quality, lots.0', `${src!.quality_code} – ${src!.quality_name}`);
     await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await fillByLabel(page, 'net weight, lots.0', String(Q));
+    await expect(page.getByLabel('shade, lots.0')).toBeDisabled();
 
-    // Processed Types — 'dyeing' (not 'twisting') is what makes this the dyed
-    // variant; ticking it reveals the required Shade No input (YarnLineRow.tsx
-    // `isDyed`).
-    await page.getByLabel('Dyeing').check();
-    await fillByLabel(page, 'shade number, yarn lot 1', shadeNo);
-
-    await fillByLabel(page, 'net weight, yarn lot 1', String(Q));
-
+    // Section B — pick the dyeing OUT item; consumed = Q, wastage auto (0).
+    await clickButton(page, 'Add source');
     await clickButton(page, 'Pick eligible out item');
     await fillByLabel(page, 'Search OUT challan no', outChallanNo);
     const eligibleOption = page.getByRole('option', { name: outChallanNo });
     await expect(eligibleOption).toBeVisible();
     await eligibleOption.click();
+    await fillByLabel(page, 'consumed quantity, pulls.0', String(Q));
 
-    // Fully receive Q with zero wastage/still-at-JW so the conservation invariant
-    // holds and the JW-debit leg's outQuantity (consumedQty + wastage) equals
-    // exactly Q.
-    await fillByLabel(page, 'consumed quantity, source 1', String(Q));
-    await fillByLabel(page, 'wastage, source 1', '0');
-    await fillByLabel(page, 'still at JW quantity, source 1', '0');
+    // Derived state now includes dyeing (Dyeing chip default-ticked) → the
+    // shade cell enables and is required.
+    const shadeCell = page.getByLabel('shade, lots.0');
+    await expect(shadeCell).toBeEnabled();
+    await shadeCell.fill(shadeNo);
 
+    // Place the full quantity via the per-lot expander (D6).
+    await page.getByLabel('place stock, lots.0').click();
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(
       page,
@@ -199,9 +157,7 @@ test(
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
     await fillByLabel(page, 'placement quantity 1', String(Q));
 
-    // ── Two-sided delta, keyed exactly as applyChallanInYarnLedger writes them
-    // (same function, same keys as the plain-yarn Task 13 spec — 'dyed' changes
-    // only the processedTypes value written into Leg B, not the key shape).
+    // ── Two-sided delta, same keys as jw-in-yarn.spec.ts.
     const jwKey = {
       lotNumber: src!.lot_number,
       skuId: src!.sku_id,
@@ -229,9 +185,7 @@ test(
     expect(jwAfter - jwBefore).toBeCloseTo(-Q, 3);
     expect(floorAfter - floorBefore).toBeCloseTo(Q, 3);
 
-    // DETAIL — capture the minted entry number and confirm the dyed-specific fields
-    // (processed type "Dyeing" badge + Shade No) are actually reflected, not just
-    // accepted silently.
+    // DETAIL — the DERIVED dyed state + shade are reflected, not just accepted.
     const challanNo = await captureDocNo(page.getByRole('main'), /\bJWI-\d{4}-\d{2}-\d{3,}\b/);
     const challanId = page.url().split('/').pop();
 
@@ -239,7 +193,7 @@ test(
     await expect(
       page.getByRole('heading', { name: `Job Work Challan In ${challanNo}` }),
     ).toBeVisible();
-    await expect(page.getByText('Dyeing')).toBeVisible();
+    await expect(page.getByText('Dyeing').first()).toBeVisible();
     await expect(page.getByText(shadeNo)).toBeVisible();
   },
 );

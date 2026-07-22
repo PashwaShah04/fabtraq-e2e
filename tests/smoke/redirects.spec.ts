@@ -8,7 +8,8 @@ const REDIRECTS: ReadonlyArray<{ from: string; to: RegExp }> = [
   // index → default landing
   { from: '/', to: /\/vendors$/ },
   // dyed JW-in is not a distinct form — it reuses the yarn form
-  { from: '/jw-challans-in/new/dyed', to: /\/jw-challans-in\/new\/yarn$/ },
+  { from: '/jw-challans-in/new/dyed', to: /\/jw-challans-in\/new$/ },
+  { from: '/jw-challans-in/new/yarn', to: /\/jw-challans-in\/new$/ },
   // beam JW-in is recorded as a Beam Receipt
   { from: '/jw-challans-in/new/beam', to: /\/beam-receipts\/new$/ },
 ];

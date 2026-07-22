@@ -26,12 +26,14 @@ const ROUTES: readonly GuardedRoute[] = [
   { path: '/jw-challans-out/new', heading: 'New Job Work Challan Out', allowedRoles: ['owner', 'storekeeper'] },
   {
     path: '/jw-challans-in/new',
-    heading: 'New JW Challan In — choose receive type',
+    heading: 'New Job Work Challan In',
     allowedRoles: ['owner', 'storekeeper'],
   },
   {
+    // Legacy entry point — redirects to /jw-challans-in/new (F5 D4); the
+    // guard must hold across the redirect.
     path: '/jw-challans-in/new/yarn',
-    heading: 'New Job Work Challan In (Yarn)',
+    heading: 'New Job Work Challan In',
     allowedRoles: ['owner', 'storekeeper'],
   },
   { path: '/designs/new', heading: 'New Design', allowedRoles: ['owner', 'storekeeper'] },
