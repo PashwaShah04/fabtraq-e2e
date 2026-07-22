@@ -111,9 +111,11 @@ async function receiveConsolidated(
   await gotoAndExpect(page, '/jw-challans-in/new');
   await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
 
-  // Section A — the grid starts with one empty lot row.
+  // Section A — the grid starts with one empty lot row. The grid's SKU
+  // trigger is `sku, lots.N` (ReceivedLotsGrid SkuCell), unlike the JW-Out
+  // form which keeps QualitySkuSelect's default "Select SKU".
   await selectByAriaLabel(page, 'quality, lots.0', `${src.quality_code} – ${src.quality_name}`);
-  await selectByAriaLabel(page, 'Select SKU', skuLabelOf(src));
+  await selectByAriaLabel(page, 'sku, lots.0', skuLabelOf(src));
   await fillByLabel(page, 'net weight, lots.0', String(q));
 
   // Section B — pick the freshly minted OUT item; consumed = q; wastage stays

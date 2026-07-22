@@ -126,8 +126,10 @@ test(
     await expect(page).toHaveURL(/\/jw-challans-in\/new$/);
 
     // Section A identity — shade stays disabled until a dyeing source is picked.
+    // The grid's SKU trigger is `sku, lots.N` (not "Select SKU" — that label
+    // belongs to the JW-Out form's unchanged QualitySkuSelect default).
     await selectByAriaLabel(page, 'quality, lots.0', `${src!.quality_code} – ${src!.quality_name}`);
-    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await selectByAriaLabel(page, 'sku, lots.0', skuOptionLabel);
     await fillByLabel(page, 'net weight, lots.0', String(Q));
     await expect(page.getByLabel('shade, lots.0')).toBeDisabled();
 
