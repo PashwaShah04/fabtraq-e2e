@@ -376,25 +376,37 @@ test(
     expect(await db.ledgerBalance(floorKey)).toBeCloseTo(0, 3);
     expect(await db.ledgerBalance(floor2Key)).toBeCloseTo(0, 3);
 
-    // ── Step 2: Stock Balance page — filter to (quality, sku) with NO
-    // location filter, so the null-location bucket group surfaces alongside
-    // any floor groups. Cross-check the rendered balance against a direct
-    // ledger read for the exact same group key (quality/sku/location=null/
-    // floor=null/jobWorker=null — this group aggregates across ALL lots of
-    // that quality+sku, same as inventory.spec.ts's oracle rule).
-    await gotoAndExpect(page, `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}`);
-    const awaitingRow = page.getByRole('row').filter({ hasText: 'Awaiting placement' });
-    await expect(awaitingRow).toBeVisible();
-    const groupBucketBalance = await db.ledgerBalance({
-      qualityId: quality!.id,
-      skuId: sku!.id,
-      locationId: null,
-      floorId: null,
-      jobWorkerId: null,
-    });
-    const awaitingBalanceCell = awaitingRow.getByRole('cell', { name: /^\d+\.\d{3} kg$/ });
-    const awaitingBalanceText = (await awaitingBalanceCell.textContent()) ?? '';
-    expect(Number.parseFloat(awaitingBalanceText)).toBeCloseTo(groupBucketBalance, 3);
+    // ── Step 2: Stock Balance OVERVIEW (B-015 redesign) — this page now
+    // shows one row per (quality, sku, processedTypes, unit) with a Custody
+    // split column, not a per-position "Awaiting placement" row; it also has
+    // no SKU filter any more (D3), so filter by quality only. The "Unplaced"
+    // part of the Custody text is exactly the group's
+    // location=null/floor=null/jobWorker=null bucket for the RAW state
+    // specifically (`db.ledgerBalance`'s `LedgerKey` has no processedTypes
+    // dimension, so it would over-count here if any job-worked stock of this
+    // quality+sku also happened to be unplaced) — same key as before, still
+    // aggregated across ALL lots of that quality+sku (same as
+    // inventory.spec.ts's oracle rule). This item was purchased with zero
+    // job-work, so its row carries the "Raw" processed badge — combined
+    // with the SKU name that uniquely picks the row out of the quality's
+    // other stock items.
+    await gotoAndExpect(page, `/inventory?qualityId=${quality!.id}&pageSize=200`);
+    const overviewRow = page.getByRole('row').filter({ hasText: sku!.name }).filter({ hasText: 'Raw' });
+    await expect(overviewRow).toHaveCount(1);
+    const bucketBalanceRow = await db.queryOne<{ bal: string | null }>(
+      `SELECT COALESCE(SUM(in_quantity - out_quantity), 0)::text AS bal
+       FROM stock_ledger
+       WHERE quality_id = $1 AND sku_id = $2 AND location_id IS NULL AND job_worker_id IS NULL
+         AND processed_types = '{}'`,
+      [quality!.id, sku!.id],
+    );
+    const groupBucketBalance = Number(bucketBalanceRow?.bal ?? 0);
+    const custodyCell = overviewRow.getByRole('cell', { name: /Unplaced/ });
+    await expect(custodyCell).toBeVisible();
+    const custodyText = (await custodyCell.textContent()) ?? '';
+    const unplacedMatch = custodyText.match(/Unplaced ([\d.]+) kg/);
+    expect(unplacedMatch, `expected an "Unplaced" figure in custody text "${custodyText}"`).not.toBeNull();
+    expect(Number.parseFloat(unplacedMatch![1])).toBeCloseTo(groupBucketBalance, 3);
     expect(groupBucketBalance).toBeGreaterThanOrEqual(Q);
 
     // ── Step 3: Lots page — exact lotNumber filter isolates THIS lot only,
@@ -497,58 +509,67 @@ test(
     await expect(finalFloor2Row).toHaveCount(1);
     await expect(finalFloor2Row).toContainText('500.000 kg');
 
-    // Stock Balance page for the exact (quality, sku, location, floor)
-    // group: cross-checked against the ledger, same oracle rule as
-    // inventory.spec.ts. Checked for BOTH floors this lot is now split across.
+    // Positions detail page (D4) for the exact (quality, sku, Raw state)
+    // stock item: cross-checked against the ledger, same oracle rule as
+    // inventory.spec.ts. The redesigned `/inventory` overview has no
+    // location/floor params at all any more — that breakdown lives on
+    // `/inventory/positions`'s "In factory" section, which lists every floor
+    // for this stock item in one page load, so BOTH floors this lot is now
+    // split across are checked from a single navigation (unlike the old
+    // per-floor `/inventory?...&floorId=` filter, which needed two).
+    const unitRow = await db.queryOne<{ unit: string }>(
+      `SELECT unit::text AS unit FROM stock_ledger WHERE quality_id = $1 AND sku_id = $2 LIMIT 1`,
+      [quality!.id, sku!.id],
+    );
+    expect(unitRow, 'expected at least one ledger row for this quality/sku to read its unit').not.toBeNull();
     await gotoAndExpect(
       page,
-      `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}&locationId=${location!.id}` +
-        `&floorId=${floor!.id}`,
+      `/inventory/positions?qualityId=${quality!.id}&skuId=${sku!.id}&state=raw&unit=${unitRow!.unit}`,
     );
-    const floorGroupBalance = await db.ledgerBalance({
-      qualityId: quality!.id,
-      skuId: sku!.id,
-      locationId: location!.id,
-      floorId: floor!.id,
-      jobWorkerId: null,
-    });
-    const floorRow = page.getByRole('row', { name: floor!.name });
-    await expect(floorRow).toBeVisible();
-    const floorBalanceCell = floorRow.getByRole('cell', { name: /^\d+\.\d{3} kg$/ });
-    const floorBalanceText = (await floorBalanceCell.textContent()) ?? '';
-    expect(Number.parseFloat(floorBalanceText)).toBeCloseTo(floorGroupBalance, 3);
+    const inFactory = page.getByRole('region', { name: 'In factory' });
+    await expect(inFactory).toBeVisible();
 
-    await gotoAndExpect(
-      page,
-      `/inventory?qualityId=${quality!.id}&skuId=${sku!.id}&locationId=${location!.id}` +
-        `&floorId=${floor2!.id}`,
-    );
-    const floor2GroupBalance = await db.ledgerBalance({
-      qualityId: quality!.id,
-      skuId: sku!.id,
-      locationId: location!.id,
-      floorId: floor2!.id,
-      jobWorkerId: null,
-    });
-    const floor2Row = page.getByRole('row', { name: floor2!.name });
+    // `db.ledgerBalance`'s `LedgerKey` has no `processedTypes` dimension (it
+    // predates B-015's state-split positions page), so it would over-count
+    // here if any job-worked stock of this quality+sku also happened to sit
+    // on the same floor — this item is raw, and the page is scoped to
+    // `state=raw`, so the oracle must be scoped the same way.
+    const rawFloorBalance = async (floorId: string): Promise<number> => {
+      const row = await db.queryOne<{ bal: string | null }>(
+        `SELECT COALESCE(SUM(in_quantity - out_quantity), 0)::text AS bal
+         FROM stock_ledger
+         WHERE quality_id = $1 AND sku_id = $2 AND location_id = $3 AND floor_id = $4
+           AND job_worker_id IS NULL AND processed_types = '{}'`,
+        [quality!.id, sku!.id, location!.id, floorId],
+      );
+      return Number(row?.bal ?? 0);
+    };
+
+    const floorGroupBalance = await rawFloorBalance(floor!.id);
+    const floorRow = inFactory.getByRole('row', { name: floor!.name });
+    await expect(floorRow).toBeVisible();
+    await expect(floorRow).toContainText(location!.name);
+    await expect(floorRow).toContainText(`${floorGroupBalance.toFixed(3)} kg`);
+
+    const floor2GroupBalance = await rawFloorBalance(floor2!.id);
+    const floor2Row = inFactory.getByRole('row', { name: floor2!.name });
     await expect(floor2Row).toBeVisible();
-    const floor2BalanceCell = floor2Row.getByRole('cell', { name: /^\d+\.\d{3} kg$/ });
-    const floor2BalanceText = (await floor2BalanceCell.textContent()) ?? '';
-    expect(Number.parseFloat(floor2BalanceText)).toBeCloseTo(floor2GroupBalance, 3);
+    await expect(floor2Row).toContainText(location!.name);
+    await expect(floor2Row).toContainText(`${floor2GroupBalance.toFixed(3)} kg`);
 
     // No "Awaiting placement" residue left for THIS lot specifically — scoped
-    // by lotNumber, not the whole (quality, sku) group. The Balance page
-    // (/inventory?qualityId=&skuId=) has no lotNumber filter (its query
-    // schema only takes qualityId/skuId/locationId/floorId/unit/jobWorkerId)
-    // and aggregates the bucket ACROSS every lot sharing this quality+sku, so
-    // a check there would break the moment another spec running later in the
-    // same serial suite legitimately leaves its OWN unplaced residue at the
-    // same quality+sku (this repo's vendor/quality/sku picks are all "first
-    // active" queries, so collisions across specs are the norm, not the
-    // exception — e.g. place-stock-transfer-sync.spec.ts's B-013 edit-twice
-    // test deliberately leaves 5kg unplaced). Use the Lots page instead
-    // (already proven lot-scoped above via ?lotNumber=), which is what
-    // "filter by lot text" concretely means here.
+    // by lotNumber, not the whole (quality, sku) group. Both the overview's
+    // Custody "Unplaced" figure and the positions page's "Awaiting
+    // placement" section aggregate across EVERY lot sharing this
+    // quality+sku, so a check there would break the moment another spec
+    // running later in the same serial suite legitimately leaves its OWN
+    // unplaced residue at the same quality+sku (this repo's
+    // vendor/quality/sku picks are all "first active" queries, so
+    // collisions across specs are the norm, not the exception — e.g.
+    // place-stock-transfer-sync.spec.ts's B-013 edit-twice test deliberately
+    // leaves 5kg unplaced). Use the Lots page instead (already proven
+    // lot-scoped above via ?lotNumber=), which is what "filter by lot text"
+    // concretely means here.
     expect(
       await db.ledgerBalance({
         lotNumber: item!.lot_number,

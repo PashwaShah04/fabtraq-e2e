@@ -57,6 +57,7 @@ const STATIC_ROUTES = [
   '/jw-challans-in/new/beam',
   '/inventory',
   '/inventory/lots',
+  '/inventory/positions',
   '/beams',
   '/designs',
   '/designs/new',
@@ -214,6 +215,40 @@ test('no raw UUID is ever rendered as visible text or a visible field value', as
   if (placement !== null) {
     const path = `/place-stock/${placement.source_type}/${placement.source_item_id}`;
     discoveredByShape.set(shapeOf(path), path);
+  }
+
+  // The B-015 positions detail page (01defc7) resolves its header's
+  // quality/SKU name from navigation state (when the overview row was
+  // clicked) OR its own fetch (when not) — B-014's rule is that it must
+  // NEVER fall back to the raw id while that fetch is in flight. Typing the
+  // URL directly (as here) is precisely the no-navigation-state path, so
+  // this exercises the regression the fix targets — a bare
+  // `/inventory/positions` (no query params) only reaches the "no stock
+  // item selected" empty state and would prove nothing.
+  const stockPosition = await db.queryOne<{
+    quality_id: string;
+    sku_id: string | null;
+    processed_types: string[];
+    unit: string;
+  }>(
+    `SELECT quality_id, sku_id, processed_types, unit::text AS unit
+     FROM stock_ledger
+     GROUP BY quality_id, sku_id, processed_types, unit
+     HAVING SUM(in_quantity - out_quantity) > 0
+     LIMIT 1`,
+  );
+  if (stockPosition !== null) {
+    const state =
+      stockPosition.processed_types.length === 0
+        ? 'raw'
+        : [...stockPosition.processed_types].sort().join(',');
+    const skuParam = stockPosition.sku_id !== null ? `&skuId=${stockPosition.sku_id}` : '';
+    const path =
+      `/inventory/positions?qualityId=${stockPosition.quality_id}${skuParam}` +
+      `&state=${state}&unit=${stockPosition.unit}`;
+    // Keyed manually (not via shapeOf, which only replaces path-segment
+    // UUIDs) since the id here lives in the query string, not the path.
+    discoveredByShape.set('/inventory/positions?qualityId=<real>', path);
   }
 
   // Pass 2: one visit per distinct discovered shape.

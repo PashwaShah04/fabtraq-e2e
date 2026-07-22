@@ -108,14 +108,36 @@ The suite found these against the live stack:
    400'd for every user. **Fixed** on `fabtraq-be fix/seed-design-code`.
 2. **Placement Location/Floor selects** unclickable ≤~1366px viewports
    (`minmax(0,1fr)` collapse). **Fixed** on `fabtraq-fe fix/placement-fieldarray-overflow`.
-3. **`/place-stock` never writes `stock_ledger`** — `addPlacements`/`mintPlacements`
-   update `placements`/`placementStatus` but write no ledger row, even on the
-   `fully_placed` transition, so queue-placed stock is invisible to inventory.
-   **Open** — `tests/flows/placement.spec.ts` documents it with a `test.fail()`
-   tripwire that will flag when the BE is fixed.
+3. **`/place-stock` never wrote `stock_ledger`** — `addPlacements`/`mintPlacements`
+   updated `placements`/`placementStatus` but wrote no ledger row, even on the
+   `fully_placed` transition, so queue-placed stock was invisible to inventory.
+   **Fixed** (2026-07-10, see the unplaced-stock-visibility design) —
+   `tests/flows/placement.spec.ts` asserts the create-time bucket credit and
+   the placement move-pair directly.
 4. **quality-form** Category/Default-Unit/Status selects have no accessible name
    (`FormControl` wraps the `Select` root, not `SelectTrigger`). **Open.**
 5. **jw-challan-out** nested `<label>` wraps the job-work-type checkbox group,
    making non-first options' accessible names ambiguous. **Open.**
-6. **inventory-balance** Quality/Location filter Selects fire two clobbering
-   `setSearchParams` calls, so the filter never reaches the URL. **Open.**
+6. **inventory-balance** Quality/Location filter Selects fired two clobbering
+   `setSearchParams` calls, so the filter never reached the URL. **Superseded** —
+   the B-015 redesign (2026-07-22) replaced that page; the new overview has no
+   location filter at all (see `tests/flows/inventory.spec.ts`).
+7. **`prisma-inventory.repository.ts` position balances overstate stock that
+   has since had a DEBIT transaction** (`out_quantity > 0`, e.g. `challan_out`) —
+   verified live: one position summed 250 (purchase) − 80 − 60 (two
+   `challan_out` rows) = 110kg in `stock_ledger`, confirmed via a direct
+   Prisma query returning all three rows correctly, yet `GET /inventory`
+   (and therefore `/inventory/summary` and `/inventory/positions`, which
+   read the same `fetchPositions` accumulation) consistently returned 250kg
+   for that same position — the debit is silently dropped somewhere in
+   `fetchPositions`'s per-row `balanceGroupKey` accumulation, not in the
+   Prisma fetch itself. A second case showed the same pattern across
+   multiple `processedTypes` states sharing one floor (144kg overstated on
+   one floor: BE reported 2645/47/41/165kg vs a 2545/3/41/165kg direct
+   ledger sum for the raw/twisting/twisting+gassing/dyeing states). Predates
+   and is independent of B-015 (the position-level `/inventory` endpoint
+   wasn't touched by the redesign) — a real, business-critical
+   stock-balance correctness bug. **Open** —
+   `tests/flows/inventory.spec.ts`'s candidate selection deliberately avoids
+   stock items with in-house debit history so this spec exercises
+   unaffected data instead of tripping over it.
