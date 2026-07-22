@@ -15,11 +15,20 @@ import { expectToast, captureDocNo } from '../../support/assert';
 // drains an at-JW position opened by a prior challan-out, not floor stock. So
 // in_house is the only origin that produces a floor-position ledger delta.
 //
-// The FE (beam-receipt-form.page.tsx) always sends composition as absolute
-// KG slices regardless of the UI's "Absolute / % Total / Design" mode toggle
-// (map-form-to-input.ts: `compositionShape: 'absolute' as const` for every
-// placement row) — so driving the default 'absolute' mode with one source row
-// and one placement is sufficient; no design/percent setup needed.
+// The FE (beam-receipt-form.page.tsx) always sends composition as absolute KG
+// slices (map-form-to-input.ts's `allocatePulls` emits
+// `compositionShape: 'absolute' as const` for every slice) — so driving one
+// Section-A yarn row + one Section-B consolidated pull row covering it
+// exactly is sufficient; no design prefill needed for this happy path.
+//
+// Consolidated-pull redesign (docs/specs/2026-07-21-beam-receipt-consolidated-
+// pull-design.md, fabtraq-fe): the old per-item mode toggle -> source cards ->
+// lot sections -> per-floor placement tables are GONE. Composition is now
+// entered as: Section A "Yarns used per beam" (quality + optional SKU + kg,
+// per beam) and Section B "Pull from stock" (one consolidated table, grouped
+// by yarn key, lot + combined location/floor + kg). The wire payload shape
+// (flat absolute composition slices) is unchanged — only the FE selectors are
+// new.
 //
 // tx.beam.create also runs per item with status: 'received' (createInHouse,
 // beam-receipt.service.ts ~line 293). IMPORTANT schema note: the `beams` table
@@ -99,28 +108,32 @@ test(
     await fillByLabel(page, 'beam number, items.0', beamNumber);
     await fillByLabel(page, 'net weight, items.0', String(Q));
 
-    // Composition — default mode is 'absolute'; add one source row.
-    await clickButton(page, 'Add yarn source');
+    // Section A — "Yarns used per beam": one yarn row for this beam, quality
+    // + SKU + kg (BeamYarnsTable.tsx). Quantity === Q keeps wastage
+    // (usedSum - netWeight) at 0 — no conservation-tolerance edge cases.
+    await clickButton(page, 'add yarn to item 1');
     await selectByAriaLabel(
       page,
-      'quality for source 1',
+      'yarn quality, items.0.yarns.0',
       `${src!.quality_code} – ${src!.quality_name}`,
     );
-    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
-    await selectByAriaLabel(page, 'source lot for source 1', src!.lot_number);
+    await selectByAriaLabel(page, 'yarn sku, items.0.yarns.0', skuOptionLabel);
+    await fillByLabel(page, 'yarn quantity, items.0.yarns.0', String(Q));
 
-    // Placement — once a lot is selected, PlacementFieldArray switches to
-    // AvailableFloorSelect (aria-label "Select floor and location"), scoped to
-    // that lot's own on-hand floors (InHouseCompositionSection.tsx
-    // handleLotChange). Placing exactly Q keeps wastage (usedSum - netWeight)
-    // at 0 — no conservation-tolerance edge cases.
-    await clickButton(page, 'Add placement');
+    // Section B — "Pull from stock": one consolidated pull row for that yarn
+    // key, covering the Q kg need exactly (B-3 exact-coverage gate). The
+    // group button's accessible name is SKU-qualified
+    // (`add pull for <quality> · <sku>`); match on the quality code, which is
+    // a stable substring regardless of exact SKU-label formatting
+    // (StockPullTable.tsx / yarn-key.ts's `qualifiedYarnLabel`).
+    await clickButton(page, `add pull for ${src!.quality_code}`);
+    await selectByAriaLabel(page, 'pull lot, pulls.0', src!.lot_number);
     await selectByAriaLabel(
       page,
-      'Select floor and location',
+      'pull floor, pulls.0',
       `${src!.loc_name} · ${src!.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabel(page, 'pull quantity, pulls.0', String(Q));
 
     // Ledger key — EXACTLY the row applyBeamCompositionLedger writes for this
     // slice: qualityId/skuId/lotNumber/locationId/floorId from the slice,

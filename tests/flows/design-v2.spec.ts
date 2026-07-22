@@ -1,8 +1,6 @@
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import type { Locator, Page } from '@playwright/test';
-
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
@@ -36,21 +34,28 @@ const WARP_WEIGHTS: Record<'A' | 'B' | 'C' | 'D', number> = {
 };
 
 // distributeByWeight(30, [8.228, 2.757, 2.552, 3.124]) — shared's real
-// algorithm (fabtraq-shared/src/primitives/distribute.ts), re-run by hand for
-// this exact input: raw shares round to [14.815, 4.964, 4.595, 5.625] (3 dp),
-// summing to 29.999; the +0.001 rounding residual is added to the LARGEST
-// weight's slot (warp A, 8.228 — distributeByWeight's documented tie-break),
-// giving a FINAL sum of exactly 30.000. This corrects the task brief's
-// suggested array (which put the residual on warp D instead) — verified
-// against the real source, not assumed.
-const EXPECTED_QTY: Record<'A' | 'B' | 'C' | 'D', number> = {
-  A: 14.816,
-  B: 4.964,
-  C: 4.595,
-  D: 5.625,
-};
+// algorithm (fabtraq-shared/src/primitives/distribute.ts) — sums to EXACTLY
+// 30.000 by construction (its documented rounding-residual tie-break lands
+// on the largest weight's slot). The per-group quantities themselves
+// (14.816 / 4.964 / 4.595 / 5.625) are pinned by FE unit/integration tests
+// (DesignPrefillDialog, allocate-pulls); this e2e only needs the exact-total
+// invariant, below.
+const NET_WEIGHT = 30;
 
-const WARP_ORDER: readonly ('A' | 'B' | 'C' | 'D')[] = ['A', 'B', 'C', 'D'];
+// Consolidated-pull redesign (docs/specs/2026-07-21-beam-receipt-
+// consolidated-pull-design.md, fabtraq-fe, Addendum v4 finding V1): every
+// warp group in this design maps to the SAME (quality, sku) pair (this seed
+// only has one quality/SKU pair), so the design-prefill dialog's
+// duplicate-yarn-key merge collapses all 4 warp-group rows into a SINGLE
+// Section-A yarn row for the beam, quantity = Σ of the 4 = NET_WEIGHT
+// exactly. The per-warp split therefore no longer exists as a distinct FE
+// state to observe here — it's proven by the unit suite instead. What this
+// e2e still proves end-to-end against the real BE: PDF -> design ->
+// colour-way -> prefilled beam -> a SPLIT-ACROSS-TWO-LOTS consolidated pull
+// (Section B allows multiple pull rows per yarn key) -> exact per-lot ledger
+// drains on save.
+const SPLIT_LOT_A_QTY = 20;
+const SPLIT_LOT_B_QTY = NET_WEIGHT - SPLIT_LOT_A_QTY; // 10
 
 interface SourcePos {
   readonly lotNumber: string;
@@ -60,24 +65,8 @@ interface SourcePos {
   readonly floorName: string;
 }
 
-// SourceRow (InHouseCompositionSection.tsx) has no row-level aria-label of
-// its own, and several of its controls (the floor select, "Add placement",
-// "placement quantity 1") are NOT indexed by source — each source's
-// placements live in their own field array, so "placement quantity 1" (the
-// first placement of THAT source) repeats identically across all 4 design-mode
-// rows. Scope on the one thing that IS uniquely indexed per row — the "remove
-// source N" button — via a `:has()`-style locator filter, so every other
-// lookup inside a row is unambiguous.
-function sourceRowLocator(page: Page, sourceIndex: number): Locator {
-  return page
-    .locator('div.rounded-md.border.border-border.bg-background.p-3')
-    .filter({
-      has: page.getByRole('button', { name: `remove source ${sourceIndex + 1}`, exact: true }),
-    });
-}
-
 test(
-  'PDF import maps a design with colour-ways, then a colour-way-2 beam drains the exact per-group ledger positions, with warp A split across two lots',
+  'PDF import maps a design with colour-ways, then a colour-way-2 beam prefill merges to one yarn row and drains via a two-lot consolidated pull',
   async ({ page, db }) => {
     const uniqueSuffix = Date.now();
     const designName = `E2E Design v2 ${uniqueSuffix}`;
@@ -208,15 +197,17 @@ test(
     );
     expect(cw2, 'design must have a colour-way at position 2').not.toBeNull();
 
-    // ── STEP 4: /beam-receipts/new, in-house, design mode, colour-way 2 ──────
-    // Resolve 4 DISTINCT (lot, floor) floor-held positions for (quality, sku)
-    // with enough balance for each warp group's drain — processed
-    // largest-requirement-first so the biggest lot is reserved for warp A
-    // (14.816 kg) before smaller lots are claimed by the others. Two lines may
-    // legitimately share a lot NUMBER as long as the FLOOR differs (the
-    // ledger key is (lot, quality, sku, floor) — CompositionSourcePicker
-    // deliberately drops the isValidInputState filter, so any processed type
-    // is eligible; see beam-receipt.spec.ts's note on the same picker).
+    // ── STEP 4: /beam-receipts/new, in-house, design prefill, colour-way 2 ───
+    // Resolve 2 DISTINCT-lot-NUMBER floor-held positions for (quality, sku)
+    // with enough balance for the two-way pull split — the bigger split
+    // (SPLIT_LOT_A_QTY) is reserved first so it doesn't get starved by the
+    // smaller one. Two lines may legitimately share a lot NUMBER as long as
+    // the FLOOR differs (the ledger key is (lot, quality, sku, floor) —
+    // CompositionSourcePicker deliberately drops the isValidInputState
+    // filter, so any processed type is eligible; see beam-receipt.spec.ts's
+    // note on the same picker) — but this test explicitly excludes the first
+    // pull's lot NUMBER for the second, so the split provably spans two
+    // distinct lots, not two floors of one lot.
     //
     // Deliberately NOT filtering job_worker_id here: a floor's TRUE available
     // balance, as enforced by beam-receipt.service.ts's per-slice guard
@@ -233,12 +224,16 @@ test(
     // seed (LOT-260415-0001 has 47kg in via challan_in, 44kg out via a
     // challan_out tagged with a job_worker_id but a REAL floor_id, so its true
     // balance is 3kg, not 47).
+    //
+    // Positions are picked JUST BEFORE they're used (not batched upfront) —
+    // this dev DB is shared with other agents concurrently exercising the
+    // SAME (and only) seeded quality/SKU, so a position resolved long before
+    // it's used can go stale by submit time. A +20kg safety margin on top of
+    // each pull's own requirement absorbs small concurrent nibbles.
+    const MARGIN_KG = 20;
     const excluded: { lotNumber: string; floorId: string }[] = [];
     async function pickPosition(
       minBalance: number,
-      // Lot NUMBERS to exclude wholesale (any floor) — used by warp A's
-      // second pull so the nested-model split provably spans two distinct
-      // lots rather than two floors of one lot.
       excludeLotNumbers: readonly string[] = [],
     ): Promise<SourcePos> {
       const excludeClauses = excluded
@@ -295,143 +290,87 @@ test(
 
     await fillByLabel(page, 'beam number, items.0', beamNumber);
 
-    await page
-      .getByRole('group', { name: 'composition mode' })
-      .getByRole('button', { name: 'Design', exact: true })
-      .click();
+    // Net weight MUST be set BEFORE opening the design-prefill dialog: the
+    // dialog's "Total yarn used" defaults from `items.0.netWeight` once, at
+    // open time, and the redesign deliberately deleted every v3 auto-resync
+    // effect (Addendum v4 / spec A-4 "Deliberate behavior change") — there is
+    // no live rescale if net weight changes afterwards.
+    await fillByLabel(page, 'net weight, items.0', String(NET_WEIGHT));
+
+    await clickButton(page, 'prefill from design, item 1');
     await selectByAriaLabel(page, 'select design', designName);
 
     await expect(page.getByRole('radiogroup', { name: 'colour-way' })).toBeVisible();
     await page.getByRole('radio', { name: 'Colour-way 2', exact: false }).click();
 
-    // Net weight is DELIBERATELY typed after the design + colour-way pick,
-    // keystroke by keystroke (pressSequentially, NOT fill — fill sets the
-    // value in one input event and can't reproduce this) — regression for the
-    // 2026-07-18 bug where the prefill guard keyed on `netWeight > 0` and
-    // froze every target quantity at the value computed from the FIRST
-    // positive keystroke ('3' of '30'), never rescaling to the full figure.
-    const netWeightInput = page.getByLabel('net weight, items.0', { exact: false });
-    await netWeightInput.click();
-    await netWeightInput.pressSequentially('30');
+    // Total yarn used already defaults to NET_WEIGHT (set above) — confirm
+    // before Apply rather than assume it.
+    await expect(page.getByLabel('total yarn used', { exact: false })).toHaveValue(
+      String(NET_WEIGHT),
+    );
 
-    // One composition line per warp group, quantity pre-filled by
-    // distributeByWeight(netWeight, warpWeights) — read + assert against
-    // EXPECTED_QTY (±0.001), then pick lot/floor per line and add the
-    // matching placement so wastage stays at 0 (Σ placements === netWeight).
-    //
-    // Positions are picked JUST BEFORE each row is driven (not batched
-    // upfront) — this dev DB is shared with other agents concurrently
-    // exercising the SAME (and only) seeded quality/SKU, so a position
-    // resolved long before it's used can go stale by submit time (observed
-    // live: a first pass batching all 4 lookups upfront picked a lot whose
-    // balance had swung from 3kg to 47kg and back to 3kg between the query
-    // and the actual POST, a few seconds later). A +20kg safety margin on
-    // top of each line's own requirement absorbs small concurrent nibbles;
-    // processing largest-requirement-first still reserves the biggest lot
-    // for warp A.
-    const MARGIN_KG = 20;
+    await clickButton(page, 'Apply');
 
-    // Card targets prefill straight from distributeByWeight — assert all 4
-    // BEFORE driving any pulls (the nested-model rework must not change them).
-    for (const label of WARP_ORDER) {
-      const i = WARP_ORDER.indexOf(label);
-      const cardInput = page.getByLabel(`source ${i + 1} target quantity`, { exact: false });
-      await expect(cardInput).toBeVisible();
-      expect(Number.parseFloat((await cardInput.inputValue()) || '0')).toBeCloseTo(
-        EXPECTED_QTY[label],
-        3,
-      );
-    }
+    // Apply replaces items.0.yarns with one row per warp group, THEN merges
+    // rows sharing a yarn key (V1) — since all 4 warp groups here map to the
+    // SAME (quality, sku), Apply collapses them into exactly ONE Section-A
+    // yarn row, quantity === NET_WEIGHT (distributeByWeight's exact-sum
+    // invariant — see NET_WEIGHT's doc comment above).
+    const yarnQtyInput = page.getByLabel('yarn quantity, items.0.yarns.0', { exact: false });
+    await expect(yarnQtyInput).toHaveValue(String(NET_WEIGHT));
+    await expect(
+      page.locator('[aria-label="yarn quantity, items.0.yarns.1"]'),
+    ).toHaveCount(0);
 
-    // ── STEP 4b: split source 1 (warp A) across TWO lots via "+ Add lot"
-    // (nested multi-lot model, spec 2026-07-19): lot 1 takes a manual
-    // 10.000 kg sub-target, lot 2 the remaining 4.816. B/C/D stay
-    // single-lot (their prefilled sub-target ≡ card target, N4). Pulls are
-    // processed largest-requirement-first (same lot-reservation logic as
-    // before); warp A's second pull excludes lot 1's lot NUMBER wholesale so
-    // the split provably spans two distinct lots, not two floors of one lot.
-    const A_LOT1_QTY = 10;
-    const A_LOT2_QTY = Math.round((EXPECTED_QTY.A - A_LOT1_QTY) * 1000) / 1000; // 4.816
+    // Section B group label is SKU-qualified (Addendum v4 finding V2):
+    // `<quality code> – <quality name> · <sku name> (<sku code>)`.
+    const groupLabel = `${quality!.code} – ${quality!.name} · ${sku!.name} (${sku!.code})`;
 
-    await page.getByRole('button', { name: 'add lot to source 1', exact: true }).click();
+    // ── STEP 4b: split the consolidated pull across TWO distinct lots
+    // (Section B allows multiple pull rows per yarn key) — the receipt-level
+    // equivalent of the old nested multi-lot model, now expressed as two
+    // `pulls[]` rows instead of a per-source lot sub-target.
+    const posBig = await pickPosition(SPLIT_LOT_A_QTY + MARGIN_KG);
+    const posSmall = await pickPosition(SPLIT_LOT_B_QTY + MARGIN_KG, [posBig.lotNumber]);
 
-    interface Pull {
-      readonly label: 'A' | 'B' | 'C' | 'D';
-      readonly lotIndex: 0 | 1;
-      readonly qty: number;
-    }
-    const pulls: readonly Pull[] = [
-      { label: 'A', lotIndex: 0, qty: A_LOT1_QTY },
-      { label: 'A', lotIndex: 1, qty: A_LOT2_QTY },
-      { label: 'B', lotIndex: 0, qty: EXPECTED_QTY.B },
-      { label: 'C', lotIndex: 0, qty: EXPECTED_QTY.C },
-      { label: 'D', lotIndex: 0, qty: EXPECTED_QTY.D },
-    ];
+    await clickButton(page, `add pull for ${quality!.code}`);
+    await selectByAriaLabel(page, 'pull lot, pulls.0', posBig.lotNumber);
+    await selectByAriaLabel(
+      page,
+      'pull floor, pulls.0',
+      `${posBig.locationName} · ${posBig.floorName}`,
+    );
+    await fillByLabel(page, 'pull quantity, pulls.0', String(SPLIT_LOT_A_QTY));
 
-    const positions = new Map<string, SourcePos>(); // key `${label}:${lotIndex}`
-    const byRequirementDesc = [...pulls].sort((a, b) => b.qty - a.qty);
-    for (const pull of byRequirementDesc) {
-      const i = WARP_ORDER.indexOf(pull.label);
-      const sourceLabel = `source ${i + 1}`;
-      const row = sourceRowLocator(page, i);
+    await clickButton(page, `add pull for ${quality!.code}`);
+    await selectByAriaLabel(page, 'pull lot, pulls.1', posSmall.lotNumber);
+    await selectByAriaLabel(
+      page,
+      'pull floor, pulls.1',
+      `${posSmall.locationName} · ${posSmall.floorName}`,
+    );
+    await fillByLabel(page, 'pull quantity, pulls.1', String(SPLIT_LOT_B_QTY));
 
-      const excludeLots =
-        pull.label === 'A' && pull.lotIndex === 1 ? [positions.get('A:0')!.lotNumber] : [];
-      const pos = await pickPosition(pull.qty + MARGIN_KG, excludeLots);
-      positions.set(`${pull.label}:${pull.lotIndex}`, pos);
-
-      const lotAria =
-        pull.lotIndex === 0
-          ? `source lot for ${sourceLabel}`
-          : `source lot ${pull.lotIndex + 1} for ${sourceLabel}`;
-      await selectByAriaLabel(page, lotAria, pos.lotNumber);
-
-      // Split card only: set each lot section's manual sub-target.
-      if (pull.label === 'A') {
-        await fillByLabel(
-          page,
-          `lot ${pull.lotIndex + 1} target for ${sourceLabel}`,
-          String(pull.qty),
-        );
-      }
-
-      // Lot sections are the dashed-border blocks inside the card, in order.
-      const section = row.locator('div.border-dashed').nth(pull.lotIndex);
-      await section.getByRole('button', { name: 'Add placement', exact: false }).click();
-      await section.locator('[aria-label="Select floor and location"]').click();
-      await page.getByRole('option', { name: `${pos.locationName} · ${pos.floorName}` }).click();
-      await section.getByLabel('placement quantity 1', { exact: false }).fill(String(pull.qty));
-    }
-
-    // The split card's allocation line must show the sub-targets summing
-    // exactly to the card target (10.000 + 4.816 = 14.816).
-    await expect(page.getByLabel('source 1 allocation')).toContainText('14.816 / 14.816');
-
-    // Sum of all placements must equal netWeight exactly (distributeByWeight's
-    // own invariant) — cross-check via the conservation bar rather than
+    // The two pulls must exactly cover the yarn's need (B-3 exact-coverage
+    // gate) — cross-check via the group's own coverage badge rather than
     // re-summing in JS, so this is a real read of the rendered UI.
-    await expect(page.getByLabel('placement conservation').first()).toContainText('Balanced');
+    await expect(page.getByLabel(`pull coverage, ${groupLabel}`, { exact: false })).toHaveText(
+      '✓ covered',
+    );
 
-    // jobWorkerId deliberately omitted (undefined = no filter, per Db's
-    // whereFor) — see pickPosition's doc comment above: the true floor
-    // balance for this (lot, location, floor) may include a legitimate
-    // debit row that happens to carry a job_worker_id, and the new beam
-    // drain row we're about to write also lands at this exact key, so an
-    // unfiltered read is the one that matches what the app itself enforces
-    // and what the delta below actually measures.
-    const pullEntries = pulls.map((pull) => {
-      const pos = positions.get(`${pull.label}:${pull.lotIndex}`)!;
-      return {
-        pull,
-        key: {
-          qualityId: quality!.id,
-          skuId: sku!.id,
-          lotNumber: pos.lotNumber,
-          locationId: pos.locationId,
-          floorId: pos.floorId,
-        },
-      };
-    });
+    const pullEntries = [
+      { pos: posBig, qty: SPLIT_LOT_A_QTY },
+      { pos: posSmall, qty: SPLIT_LOT_B_QTY },
+    ].map(({ pos, qty }) => ({
+      qty,
+      key: {
+        qualityId: quality!.id,
+        skuId: sku!.id,
+        lotNumber: pos.lotNumber,
+        locationId: pos.locationId,
+        floorId: pos.floorId,
+      },
+    }));
     const before = await Promise.all(pullEntries.map((e) => db.ledgerBalance(e.key)));
 
     await clickButton(page, 'Save beam receipt');
@@ -439,15 +378,14 @@ test(
     await expect(page).toHaveURL(/\/beam-receipts\/[^/]+$/);
 
     // ── STEP 5: ledger oracle — each pull drained exactly its own quantity,
-    // including BOTH halves of warp A's two-lot split ───
+    // including both halves of the two-lot split ───────────────────────────
     const after = await Promise.all(pullEntries.map((e) => db.ledgerBalance(e.key)));
     pullEntries.forEach((e, i) => {
-      expect(after[i] - before[i]).toBeCloseTo(-e.pull.qty, 3);
+      expect(after[i] - before[i]).toBeCloseTo(-e.qty, 3);
     });
 
-    // The two warp-A pulls landed in two DISTINCT lots — the nested model's
-    // whole point.
-    expect(positions.get('A:0')!.lotNumber).not.toBe(positions.get('A:1')!.lotNumber);
+    // The two pulls landed in two DISTINCT lots — the split's whole point.
+    expect(posBig.lotNumber).not.toBe(posSmall.lotNumber);
 
     // ── STEP 6: display denormalizations (2026-07-19 fixes) ─────────────────
     // Receipt detail shows the design NAME (mapper previously hardcoded
