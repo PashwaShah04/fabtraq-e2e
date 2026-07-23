@@ -73,6 +73,11 @@ export class Db {
     return res.rows[0] ?? null;
   }
 
+  async queryMany<T extends QueryResultRow>(sql: string, params: unknown[] = []): Promise<T[]> {
+    const res = await this.pool.query<T>(sql, params);
+    return res.rows;
+  }
+
   async close(): Promise<void> {
     await this.pool.end();
   }

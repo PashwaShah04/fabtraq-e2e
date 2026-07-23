@@ -26,6 +26,7 @@ const ROUTES = [
   '/beams',
   '/inventory',
   '/inventory/lots',
+  '/inventory/positions',
   '/place-stock',
   '/stock-transfers',
   '/audit-log',
