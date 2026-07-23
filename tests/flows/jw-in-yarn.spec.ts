@@ -169,7 +169,10 @@ async function receiveLot(
   const eligibleOption = page.getByRole('option', { name: outChallanNo });
   await expect(eligibleOption).toBeVisible();
   await eligibleOption.click();
-  await fillByLabel(page, 'consumed quantity, lots.0.sources.0', String(q));
+  // Picking the source prefills Consumed with min(pendingAtJW, uncovered
+  // need) — here pending == net == q, so no manual fill: the receipt below
+  // only balances (and saves) if the prefill actually landed q.
+  await expect(page.getByLabel('consumed quantity, lots.0.sources.0')).toHaveValue(String(q));
 
   // Work-done chips appear once the source is picked, default ticked (D3) —
   // no interaction needed; assert presence so a silent regression can't pass.
@@ -406,7 +409,9 @@ test(
     const redOption = page.getByRole('option', { name: outNoRed });
     await expect(redOption).toBeVisible();
     await redOption.click();
-    await fillByLabel(page, 'consumed quantity, lots.0.sources.0', String(Q_RED));
+    // Prefill caps at the source's pendingAtJW: the lot needs 11 but RED has
+    // only Q_RED pending → Consumed lands at Q_RED with no manual fill.
+    await expect(page.getByLabel('consumed quantity, lots.0.sources.0')).toHaveValue(String(Q_RED));
 
     // Source row 2 — the BLUE out item, under the SAME received lot.
     await page.getByLabel('add source, lots.0').click();
@@ -415,7 +420,9 @@ test(
     const blueOption = page.getByRole('option', { name: outNoBlue });
     await expect(blueOption).toBeVisible();
     await blueOption.click();
-    await fillByLabel(page, 'consumed quantity, lots.0.sources.1', String(Q_BLUE));
+    // Second row prefills only the uncovered remainder (11 − Q_RED = Q_BLUE),
+    // not BLUE's full pending balance — again no manual fill.
+    await expect(page.getByLabel('consumed quantity, lots.0.sources.1')).toHaveValue(String(Q_BLUE));
 
     // Balanced (6 + 5 = 11 == net) — the old "orphan pull" failure mode is
     // impossible now: no coverage error despite the two sources carrying
