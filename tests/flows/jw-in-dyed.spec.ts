@@ -104,7 +104,7 @@ test(
     //    wraps the whole multi-select group (known FE quirk, task-14-report.md).
     await gotoAndExpect(page, '/jw-challans-out/new');
     await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
-    await page.getByRole('checkbox', { name: 'Dyeing', exact: true }).check();
+    await page.getByRole('checkbox', { name: 'Dyeing' }).check();
     await selectByAriaLabel(
       page,
       'Quality for line 1',
@@ -140,7 +140,7 @@ test(
     // Section B — grouped by lot: add a source row under lot 0, pick the
     // dyeing OUT item; consumed = Q, wastage auto (0).
     await page.getByLabel('add source, lots.0').click();
-    await page.getByLabel('source, lots.0.sources.0').click();
+    await page.getByLabel('source, lots.0.sources.0', { exact: true }).click();
     await fillByLabel(page, 'Search OUT challan no', outChallanNo);
     const eligibleOption = page.getByRole('option', { name: outChallanNo });
     await expect(eligibleOption).toBeVisible();

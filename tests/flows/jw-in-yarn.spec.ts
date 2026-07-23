@@ -118,7 +118,10 @@ async function openJwPosition(
   await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
   // getByRole (not getByLabel) — the outer Operations <label> wraps the whole
   // multi-select group; see jw-in-dyed.spec.ts note on the known FE quirk.
-  await page.getByRole('checkbox', { name: jobWorkTypeLabel, exact: true }).check();
+  // Deliberately NOT exact: the group's FIRST checkbox (Twisting) inherits the
+  // wrapping label's text, making its accessible name
+  // "Operations * Job work types Twisting" — exact:'Twisting' never matches it.
+  await page.getByRole('checkbox', { name: jobWorkTypeLabel }).check();
   await selectByAriaLabel(page, 'Quality for line 1', `${src.quality_code} – ${src.quality_name}`);
   await selectByAriaLabel(page, 'Select SKU', skuLabelOf(src));
   await selectByAriaLabel(page, 'Source lot for line 1', src.lot_number);
@@ -161,7 +164,7 @@ async function receiveLot(
   // freshly minted OUT item; consumed = q; wastage stays blank (auto = 0
   // since consumed == net); still-at-JW defaults to 0.
   await page.getByLabel('add source, lots.0').click();
-  await page.getByLabel('source, lots.0.sources.0').click();
+  await page.getByLabel('source, lots.0.sources.0', { exact: true }).click();
   await fillByLabel(page, 'Search OUT challan no', outChallanNo);
   const eligibleOption = page.getByRole('option', { name: outChallanNo });
   await expect(eligibleOption).toBeVisible();
@@ -322,7 +325,7 @@ test(
     );
     expect(lotCRow).not.toBeNull();
     const ledgerRow = await db.queryOne<{ processed_types: string[] }>(
-      `SELECT processed_types FROM stock_ledger
+      `SELECT processed_types::text[] AS processed_types FROM stock_ledger
        WHERE lot_number = $1 ORDER BY created_at DESC LIMIT 1`,
       [lotCRow!.lot_no],
     );
@@ -398,7 +401,7 @@ test(
 
     // Source row 1 — the RED out item.
     await page.getByLabel('add source, lots.0').click();
-    await page.getByLabel('source, lots.0.sources.0').click();
+    await page.getByLabel('source, lots.0.sources.0', { exact: true }).click();
     await fillByLabel(page, 'Search OUT challan no', outNoRed);
     const redOption = page.getByRole('option', { name: outNoRed });
     await expect(redOption).toBeVisible();
@@ -407,7 +410,7 @@ test(
 
     // Source row 2 — the BLUE out item, under the SAME received lot.
     await page.getByLabel('add source, lots.0').click();
-    await page.getByLabel('source, lots.0.sources.1').click();
+    await page.getByLabel('source, lots.0.sources.1', { exact: true }).click();
     await fillByLabel(page, 'Search OUT challan no', outNoBlue);
     const blueOption = page.getByRole('option', { name: outNoBlue });
     await expect(blueOption).toBeVisible();
