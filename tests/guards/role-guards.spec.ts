@@ -14,6 +14,9 @@ type Role = 'owner' | 'storekeeper' | 'accountant';
 
 interface GuardedRoute {
   readonly path: string;
+  // For legacy paths whose route element is a bare <Navigate>: the URL the
+  // browser actually lands on. The guard assertions run against this URL.
+  readonly resolvedPath?: string;
   // Exact heading text confirmed against each page's <PageHeader title="…"> / <h1>.
   readonly heading: string;
   // Confirmed against fabtraq-fe/src/app/router.tsx RoleGuard allowed={[...]} for this route.
@@ -31,8 +34,11 @@ const ROUTES: readonly GuardedRoute[] = [
   },
   {
     // Legacy entry point — redirects to /jw-challans-in/new (F5 D4); the
-    // guard must hold across the redirect.
+    // guard must hold across the redirect. The <Navigate> fires for EVERY
+    // role (it sits outside the RoleGuard), so a denied visitor sees the
+    // Forbidden UI at the REDIRECTED URL, not the legacy one.
     path: '/jw-challans-in/new/yarn',
+    resolvedPath: '/jw-challans-in/new',
     heading: 'New Job Work Challan In',
     allowedRoles: ['owner', 'storekeeper'],
   },
@@ -57,8 +63,9 @@ async function assertAllowed(page: import('@playwright/test').Page, route: Guard
 
 async function assertDenied(page: import('@playwright/test').Page, route: GuardedRoute): Promise<void> {
   await page.goto(route.path);
-  // Forbidden UI renders in place — same URL, no /login bounce.
-  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(route.path)}$`));
+  // Forbidden UI renders in place — same URL (post-redirect for legacy
+  // <Navigate> paths), no /login bounce.
+  await expect(page).toHaveURL(new RegExp(`${escapeRegExp(route.resolvedPath ?? route.path)}$`));
   await expect(page).not.toHaveURL(/\/login/);
   await expect(page.getByRole('heading', { name: FORBIDDEN_HEADING })).toBeVisible();
   await expect(page.getByText(FORBIDDEN_TEXT)).toBeVisible();

@@ -375,7 +375,6 @@ test(
           {
             qualityId: src!.quality_id,
             skuId: src!.sku_id,
-            processedTypes: ['warping'],
             netWeight: Q_WARP,
             unit: 'KG',
             sources: [
@@ -384,7 +383,13 @@ test(
                 consumedQty: Q_WARP,
                 wastage: 0,
                 stillAtJwQty: 0,
-                completions: [],
+                // D2 (spec 2026-07-22): processedTypes is DERIVED server-side —
+                // union of source priors ∪ completed=true completions — and no
+                // longer accepted on the item. The warped state must therefore
+                // arrive via this completion; an empty completions array mints
+                // the lot with processed_types = {} and the sizing OUT picker
+                // silently excludes it (needs 'warping' present).
+                completions: [{ jobWorkType: 'warping', completed: true }],
               },
             ],
             placements: [
