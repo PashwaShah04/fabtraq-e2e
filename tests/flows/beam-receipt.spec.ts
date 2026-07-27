@@ -133,7 +133,17 @@ test(
     // a stable substring regardless of exact SKU-label formatting
     // (StockPullTable.tsx / yarn-key.ts's `qualifiedYarnLabel`).
     await clickButton(page, `add pull for ${src!.quality_code}`);
-    await selectByAriaLabel(page, 'pull lot, pulls.0', src!.lot_number);
+
+    // Canonical lot vocabulary (spec 2026-07-27): the pull picker's options
+    // must carry the processed state — "LOT · balance KG · Raw" for this raw
+    // seed lot — exactly like the JW pickers. Open the dropdown, assert the
+    // full label shape, then pick (selectByAriaLabel would reopen it, so
+    // drive the two steps manually here).
+    await page.locator('[aria-label="pull lot, pulls.0"]').click();
+    const pullLotOption = page.getByRole('option', { name: src!.lot_number });
+    await expect(pullLotOption).toContainText(/· \d+\.\d{3} KG · Raw$/);
+    await pullLotOption.click();
+
     await selectByAriaLabel(
       page,
       'pull floor, pulls.0',
