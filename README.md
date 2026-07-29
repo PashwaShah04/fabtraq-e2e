@@ -51,20 +51,24 @@ To run a single spec: `npm run e2e -- tests/flows/stock-transfer.spec.ts`.
    `npm run e2e` handles this for you — only relevant if you're launching the
    BE dev server some other way for manual/partial runs.
 
-## Companion-repo branch requirement
+## Running from a worktree
 
-The suite tests whatever `../fabtraq-be` and `../fabtraq-fe` have **checked out**.
-Two fixes the suite depends on currently live on their own branches (not yet on
-the feature branches):
+The suite defaults to `../fabtraq-be` / `../fabtraq-fe` (the original checkout
+layout). A worktree checkout (e.g. `worktrees/<name>/e2e`) sits next to
+sibling worktrees instead, so point the suite at those with `E2E_BE_DIR` /
+`E2E_FE_DIR` — both `playwright.config.ts`'s `webServer` commands and the
+`e2e` script's reseed step honor them:
 
-- **`fabtraq-be` → `fix/seed-design-code`** — corrects a seed fixture (`DSG-001`→`DSN-001`)
-  without which `GET /designs` 400s and `masters/designs.spec.ts` fails.
-- **`fabtraq-fe` → `fix/placement-fieldarray-overflow`** — the placement
-  Location/Floor layout fix, without which placement-driven flows fail at the
-  default 1280×720 viewport.
+```bash
+# full run (RESEEDS fabtraq_dev)
+E2E_BE_DIR=../be E2E_FE_DIR=../fe npm run e2e
 
-Check those out before running, or those specs will fail. (They are isolated fix
-branches intended to be cherry-picked to `main`.)
+# single spec (does NOT reseed; dev servers must be stopped first)
+E2E_BE_DIR=../be E2E_FE_DIR=../fe npx playwright test tests/flows/<spec>.spec.ts --project=authed
+```
+
+Omit both vars to fall back to the default `../fabtraq-be` / `../fabtraq-fe`
+layout.
 
 ## Design & conventions
 

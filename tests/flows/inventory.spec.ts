@@ -1,5 +1,6 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
+import { createSentinelPurchase } from '../../support/sentinel-purchase';
 
 // Inventory is a pure read view over `stock_ledger` — no create/edit here.
 // Rewritten for the Stock Balance overview redesign (B-015,
@@ -350,4 +351,143 @@ test('overview row matches the ledger rollup for its stock item; positions detai
   const lotRows = page.getByRole('row');
   // header row + at least one data row
   expect(await lotRows.count()).toBeGreaterThan(1);
+
+  // AUDIT (E11 plan note, "the existing test this breaks" — `:295` above).
+  // The plan (written before FE commit 99b41d9) predicted
+  // `expect(url.searchParams.get('skuId')).toBe(candidate!.skuId)` on line 295
+  // would start failing once null-SKU stock existed, on the theory that Task
+  // 12's NO_SHADE disambiguation applied wherever `candidate.skuId` is null.
+  // It does not: Task 12 (11e9529, 99b41d9) scoped the fix to `buildLotsUrl`
+  // only (fabtraq-fe `positions-url.ts`), which drives the FURTHER
+  // `/inventory/positions` → `/inventory/lots` drill-down (a server-filtered
+  // endpoint, where an absent skuId really did mean "no filter" — the bug).
+  // Line 295's URL is built by `buildPositionsUrl`, used for the OVERVIEW →
+  // POSITIONS click above (line 291) and untouched by Task 12 — confirmed by
+  // reading `positions-url.ts`'s own doc comment, which explicitly warns not
+  // to conflate the two: `/inventory/positions` filters client-side, so an
+  // absent skuId meaning "the null-SKU group" was never wrong there, and
+  // `buildPositionsUrl` still omits skuId for `candidate.skuId === null`,
+  // matching `url.searchParams.get('skuId') === null` by construction — not
+  // by the coincidence the plan feared. No fix applies at line 295; the E11
+  // test below covers the drill-down that Task 12 actually changed.
+});
+
+// E11 — `/inventory/lots` null-SKU drill-down (FE Task 12, shared commits
+// 11e9529/99b41d9). `buildLotsUrl(qualityId, null)` now emits the explicit
+// `NO_SHADE` token instead of omitting `skuId`, so the server-filtered
+// `/inventory/lots` endpoint can finally tell "the null-SKU group" apart from
+// "no SKU filter at all" (the pre-fix bug: an omitted `skuId` meant "any SKU",
+// so a null-SKU drill-down silently listed every SKU's lots for that
+// quality). QTY-001 (the seed's one active quality) always carries a real-SKU
+// lot (SKU-001/red); `createSentinelPurchase` always resolves to the same
+// quality (lowest `code` among active qualities), so one sentinel purchase
+// gives this test both kinds of stock on the same quality — required for the
+// differential assertion below to mean anything.
+test('inventory lots drill-down: NO_SHADE disambiguates the null-SKU group from a real SKU and from the quality-alone filter', async ({
+  page,
+  db,
+}) => {
+  const Q = 30;
+  const sentinel = await createSentinelPurchase(page, db, Q);
+
+  const quality = await db.queryOne<{ name: string }>(
+    `SELECT name FROM yarn_qualities WHERE id = $1`,
+    [sentinel.qualityId],
+  );
+  expect(quality, 'sentinel purchase must reference a real quality').not.toBeNull();
+
+  const realSku = await db.queryOne<{ id: string; name: string }>(
+    `SELECT id, name FROM yarn_skus WHERE quality_id = $1 ORDER BY code LIMIT 1`,
+    [sentinel.qualityId],
+  );
+  expect(realSku, 'the sentinel quality must have at least one real SKU for the differential').not.toBeNull();
+
+  const realSkuLot = await db.queryOne<{ lot_number: string }>(
+    `SELECT lot_number
+     FROM stock_ledger
+     WHERE quality_id = $1 AND sku_id = $2
+     GROUP BY lot_number
+     HAVING SUM(in_quantity - out_quantity) > 0
+     ORDER BY lot_number
+     LIMIT 1`,
+    [sentinel.qualityId, realSku!.id],
+  );
+  expect(
+    realSkuLot,
+    'seed must carry a positive-balance real-SKU lot of the sentinel quality for the differential',
+  ).not.toBeNull();
+
+  // Branch 1 — SKU-less drill-down. Reached via the positions page's "View
+  // lots" link with no skuId in the URL (D4: absence there IS the null-SKU
+  // selector), which `buildLotsUrl` must translate to the explicit NO_SHADE
+  // token rather than passing absence straight through.
+  await gotoAndExpect(page, `/inventory/positions?qualityId=${sentinel.qualityId}`);
+  const nullLotsReqPromise = page.waitForRequest(
+    (req) =>
+      req.method() === 'GET' &&
+      req.url().includes('/inventory/lots?') &&
+      req.url().includes(`qualityId=${sentinel.qualityId}`),
+  );
+  await page.getByRole('link', { name: 'View lots' }).click();
+  const nullLotsReq = await nullLotsReqPromise;
+  expect(new URL(nullLotsReq.url()).searchParams.get('skuId')).toBe('NO_SHADE');
+  await expect(page).toHaveURL(new RegExp(`/inventory/lots\\?qualityId=${sentinel.qualityId}&skuId=NO_SHADE`));
+
+  // pageSize bumped so the target lot is on-page regardless of how many other
+  // lots this quality has accumulated across the suite (single-spec runs do
+  // not reseed).
+  await gotoAndExpect(page, `/inventory/lots?qualityId=${sentinel.qualityId}&skuId=NO_SHADE&pageSize=200`);
+  await expect(page.getByRole('row', { name: sentinel.lotNumber })).toHaveCount(1);
+  // The differential: on the pre-fix build this would have rendered too,
+  // because an omitted skuId applied no filter at all.
+  await expect(page.getByRole('row', { name: realSkuLot!.lot_number })).toHaveCount(0);
+
+  // Branch 2 — real-SKU drill-down, unchanged: skuId carries the uuid, both
+  // at the route and on the wire.
+  await gotoAndExpect(page, `/inventory/positions?qualityId=${sentinel.qualityId}&skuId=${realSku!.id}`);
+  const realLotsReqPromise = page.waitForRequest(
+    (req) =>
+      req.method() === 'GET' &&
+      req.url().includes('/inventory/lots?') &&
+      req.url().includes(`qualityId=${sentinel.qualityId}`),
+  );
+  await page.getByRole('link', { name: 'View lots' }).click();
+  const realLotsReq = await realLotsReqPromise;
+  expect(new URL(realLotsReq.url()).searchParams.get('skuId')).toBe(realSku!.id);
+
+  await gotoAndExpect(page, `/inventory/lots?qualityId=${sentinel.qualityId}&skuId=${realSku!.id}&pageSize=200`);
+  // A real-SKU lot can legitimately have more than one row here — the lots
+  // page is one row per (lot, location/state) partition, and the seed's lot
+  // has been through several scenarios — so "present" means visible-at-least-
+  // once, not exactly 1 (unlike the sentinel's freshly-minted, single-position
+  // lot). `.first()` auto-retries through the initial data load.
+  await expect(page.getByRole('row', { name: realSkuLot!.lot_number }).first()).toBeVisible();
+  await expect(page.getByRole('row', { name: sentinel.lotNumber })).toHaveCount(0);
+
+  // Branch 3 — quality-alone filter (the restored dropdown behaviour, D3):
+  // absent skuId must mean "no filter" here, returning BOTH kinds — the
+  // assertion that gives this spec its teeth: NO_SHADE and absent must yield
+  // DIFFERENT row sets (Branch 1's null-SKU set is a strict subset of this
+  // one), not just that NO_SHADE "works" in isolation.
+  //
+  // NOT driven through the "Filter by quality" select, despite the plan's
+  // wording — a real, reproducible bug (found while writing this test, filed
+  // to the lead separately, out of E11's scope to fix): the select's
+  // `onValueChange` fires TWO sequential `setParam` calls (qualityId, then
+  // clearing skuId) built on `setSearchParams` from `useSearchParams`. Each
+  // call's functional updater closes over the SAME pre-click `prev`, so the
+  // second call's `next = new URLSearchParams(prev)` discards the first
+  // call's qualityId change — confirmed live: selecting a quality here leaves
+  // the URL as `?pageSize=200&page=1`, qualityId never applied. (The
+  // "Location" select's floorId-clearing handler has the identical shape and
+  // is presumably equally broken — not verified further, out of scope here.)
+  // A single-setParam control (Vendor) was confirmed unaffected. Asserting
+  // the WIRE contract directly via URL navigation below still proves what D3
+  // requires — that an absent skuId applies no filter — without the test
+  // silently passing against a UI control that cannot currently reach that
+  // state.
+  await gotoAndExpect(page, `/inventory/lots?qualityId=${sentinel.qualityId}&pageSize=200`);
+  expect(new URL(page.url()).searchParams.has('skuId')).toBe(false);
+  await expect(page.getByRole('row', { name: sentinel.lotNumber })).toHaveCount(1);
+  await expect(page.getByRole('row', { name: realSkuLot!.lot_number }).first()).toBeVisible();
 });
