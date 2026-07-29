@@ -6,6 +6,7 @@ import { COLOURWAY_COPY, SENTINEL_OPTION_LABEL } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
 import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
+import { importDesignWithUnmappedColourway3 } from '../../support/design-fixtures';
 
 // ---------------------------------------------------------------------------
 // PDF -> mapped design -> colour-way beam -> exact ledger drains (design-v2
@@ -424,54 +425,9 @@ test(
 // until every unmapped group has an answer.
 // ---------------------------------------------------------------------------
 
-/**
- * Drives /designs/new -> Import from PDF -> map colour-way 1 + 2, leaving
- * colour-way 3 unmapped -> Create design. Factored out so this second test
- * doesn't hand-duplicate the ~50-line import flow test 1 already drives
- * inline; test 1 is left untouched since it already passes and touching it
- * buys nothing behavioural.
- */
-async function importDesignWithUnmappedColourway3(
-  page: import('@playwright/test').Page,
-  designName: string,
-  quality: { id: string; code: string; name: string },
-  sku: { id: string; code: string; name: string },
-): Promise<string> {
-  await gotoAndExpect(page, '/designs/new');
-  await fillByLabel(page, 'design name', designName);
-
-  await clickButton(page, 'Import from PDF');
-  await page.getByLabel('Upload design PDF', { exact: false }).setInputFiles(FIXTURE_PDF);
-  await expect(page.getByRole('heading', { name: 'Assign quality per group' })).toBeVisible({
-    timeout: 60_000,
-  });
-
-  const qualityOption = `${quality.code} – ${quality.name}`;
-  const groupRows: { readonly section: 'warp' | 'weft'; readonly label: string }[] = [
-    { section: 'warp', label: 'A' },
-    { section: 'warp', label: 'B' },
-    { section: 'warp', label: 'C' },
-    { section: 'warp', label: 'D' },
-    { section: 'weft', label: 'A' },
-  ];
-  for (const g of groupRows) {
-    await selectByAriaLabel(page, `quality, ${g.section} group ${g.label}`, qualityOption);
-  }
-
-  const skuOption = `${sku.name} (${sku.code})`;
-  // Colour-way 1 + 2 cells (indices 0,3,6,9,12 and 1,4,7,10,13); colour-way
-  // 3 (2,5,8,11,14) is deliberately left unmapped — same shape as test 1.
-  const cellsToMap = [0, 3, 6, 9, 12, 1, 4, 7, 10, 13];
-  for (const idx of cellsToMap) {
-    await selectByAriaLabel(page, `sku, cell ${idx}`, skuOption);
-  }
-
-  await clickButton(page, 'Apply');
-  await clickButton(page, 'Create design');
-  await expectToast(page, /Design DSN-\d{3,} created/);
-  await expect(page).toHaveURL(/\/designs\/[^/]+$/);
-  return page.url().split('/').pop() as string;
-}
+// importDesignWithUnmappedColourway3 lives in support/design-fixtures.ts
+// (extracted 2026-07-29, E9): the visual-verification spec reuses the same
+// ~50-line PDF-import flow rather than rebuilding it for a screenshot.
 
 test(
   'design prefill from an unmapped colour-way blocks Apply until every unmapped warp group is answered, then a fully-mapped colour-way flows through unchanged (E7, O1 usage-time enforcement)',
