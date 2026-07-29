@@ -85,6 +85,14 @@ receipt response already contains everything; one denormalised id reaches it.
   assert URL + a provenance detail renders; run live.
 - Visual: live screenshot of the detail page (verify-UI-visually rule).
 
+## Addendum (2026-07-30, user request)
+
+The same row-click pattern applied to the **Beam Receipts** register:
+`BeamReceiptListPage` rows navigate to the existing `/beam-receipts/:id`
+detail page (View button kept). FE-only — no schema/BE change. Covered by an
+integration test (list → click row → detail heading) and a live e2e test in
+`beam-receipt.spec.ts`.
+
 ## Out of scope
 
 - Beam drain/ledger history on this page (B-005/B-010 ledger area) — separate

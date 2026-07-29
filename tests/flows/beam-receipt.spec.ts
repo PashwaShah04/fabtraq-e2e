@@ -945,3 +945,22 @@ test(
     ).toHaveCount(0);
   },
 );
+
+test('receipt register rows are clickable through to the detail page (spec 2026-07-30)', async ({
+  page,
+  db,
+}) => {
+  const receipt = await db.queryOne<{ id: string; entry_no: string }>(
+    `SELECT id, entry_no FROM beam_receipts ORDER BY created_at DESC LIMIT 1`,
+  );
+  expect(receipt, 'seed must provide at least one beam receipt').not.toBeNull();
+
+  await gotoAndExpect(page, '/beam-receipts');
+  const row = page.getByRole('row', { name: receipt!.entry_no });
+  await expect(row).toBeVisible();
+  // The whole row is clickable; the View link stays as the keyboard path.
+  await expect(row.getByRole('link', { name: 'View' })).toBeVisible();
+  await row.getByText(receipt!.entry_no, { exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/beam-receipts/${receipt!.id}$`));
+  await expect(page.getByRole('heading', { name: receipt!.entry_no })).toBeVisible();
+});
