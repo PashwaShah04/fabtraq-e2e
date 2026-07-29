@@ -2,6 +2,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { test, expect } from '../../fixtures/test';
+import { COLOURWAY_COPY, SENTINEL_OPTION_LABEL } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
 import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
@@ -406,5 +407,194 @@ test(
     expect(beamItem, 'the created beam receipt item must be found by its beam number').not.toBeNull();
     expect(beamItem!.colourway_id).toBe(cw2!.id);
     expect(beamItem!.design_id).toBe(designId);
+  },
+);
+
+// ---------------------------------------------------------------------------
+// E7 (docs/plans/2026-07-27-sku-shade-e2e.md) — design prefill from an
+// UNMAPPED colour-way. O1 resolved as usage-time enforcement (see
+// DesignPrefillDialog.tsx): design-create and PDF import keep nullable
+// cells (unchanged — proven implicitly below, since this test drives the
+// same import-and-leave-cw3-unmapped flow test 1 already covers), and the
+// enforcement instead lives at USE time — the beam-receipt prefill dialog
+// itself requires an explicit answer (a real SKU, or the "No shade /
+// greige" sentinel) for every unmapped warp group before Apply is even
+// clickable. There is no partial-apply/blocked-save state to test, unlike
+// the plan's original (pre-O1) description: Apply cannot be invoked at all
+// until every unmapped group has an answer.
+// ---------------------------------------------------------------------------
+
+/**
+ * Drives /designs/new -> Import from PDF -> map colour-way 1 + 2, leaving
+ * colour-way 3 unmapped -> Create design. Factored out so this second test
+ * doesn't hand-duplicate the ~50-line import flow test 1 already drives
+ * inline; test 1 is left untouched since it already passes and touching it
+ * buys nothing behavioural.
+ */
+async function importDesignWithUnmappedColourway3(
+  page: import('@playwright/test').Page,
+  designName: string,
+  quality: { id: string; code: string; name: string },
+  sku: { id: string; code: string; name: string },
+): Promise<string> {
+  await gotoAndExpect(page, '/designs/new');
+  await fillByLabel(page, 'design name', designName);
+
+  await clickButton(page, 'Import from PDF');
+  await page.getByLabel('Upload design PDF', { exact: false }).setInputFiles(FIXTURE_PDF);
+  await expect(page.getByRole('heading', { name: 'Assign quality per group' })).toBeVisible({
+    timeout: 60_000,
+  });
+
+  const qualityOption = `${quality.code} – ${quality.name}`;
+  const groupRows: { readonly section: 'warp' | 'weft'; readonly label: string }[] = [
+    { section: 'warp', label: 'A' },
+    { section: 'warp', label: 'B' },
+    { section: 'warp', label: 'C' },
+    { section: 'warp', label: 'D' },
+    { section: 'weft', label: 'A' },
+  ];
+  for (const g of groupRows) {
+    await selectByAriaLabel(page, `quality, ${g.section} group ${g.label}`, qualityOption);
+  }
+
+  const skuOption = `${sku.name} (${sku.code})`;
+  // Colour-way 1 + 2 cells (indices 0,3,6,9,12 and 1,4,7,10,13); colour-way
+  // 3 (2,5,8,11,14) is deliberately left unmapped — same shape as test 1.
+  const cellsToMap = [0, 3, 6, 9, 12, 1, 4, 7, 10, 13];
+  for (const idx of cellsToMap) {
+    await selectByAriaLabel(page, `sku, cell ${idx}`, skuOption);
+  }
+
+  await clickButton(page, 'Apply');
+  await clickButton(page, 'Create design');
+  await expectToast(page, /Design DSN-\d{3,} created/);
+  await expect(page).toHaveURL(/\/designs\/[^/]+$/);
+  return page.url().split('/').pop() as string;
+}
+
+test(
+  'design prefill from an unmapped colour-way blocks Apply until every unmapped warp group is answered, then a fully-mapped colour-way flows through unchanged (E7, O1 usage-time enforcement)',
+  async ({ page, db }) => {
+    const uniqueSuffix = Date.now();
+    const designName = `E2E Design v2 unmapped ${uniqueSuffix}`;
+    const beamNumber = `BM-DSV2-UNM-${uniqueSuffix}`;
+
+    const quality = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM yarn_qualities WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(quality, 'seed must provide at least one active yarn quality').not.toBeNull();
+
+    const sku = await db.queryOne<{
+      id: string;
+      code: string;
+      name: string;
+      shade_number: string | null;
+    }>(
+      `SELECT id, code, name, shade_number FROM yarn_skus WHERE status = 'active' AND quality_id = $1 ORDER BY code LIMIT 1`,
+      [quality!.id],
+    );
+    expect(sku, 'seed must provide at least one active SKU for the chosen quality').not.toBeNull();
+    // QualitySkuSelect's own SelectItem label ("name", or "name — shadeNumber"
+    // when set) — different from the design-mapping grid's "name (code)"
+    // format used inside the helper above, since it's a different component.
+    const skuLabel =
+      sku!.shade_number !== null && sku!.shade_number !== ''
+        ? `${sku!.name} — ${sku!.shade_number}`
+        : sku!.name;
+
+    const designId = await importDesignWithUnmappedColourway3(page, designName, quality!, sku!);
+
+    // Badge: countUnmappedShades counts across every colour-way — 5 cells
+    // (4 warp + 1 weft) are unmapped for colour-way 3, none for 1/2.
+    const badgeText = COLOURWAY_COPY.unmappedShadeBadge(5);
+    await expect(page.getByRole('heading', { name: designName })).toBeVisible();
+    await expect(page.getByText(badgeText)).toBeVisible();
+
+    await gotoAndExpect(page, '/designs');
+    await expect(page.getByRole('row', { name: designName }).getByText(badgeText)).toBeVisible();
+
+    // ── Beam receipt prefill from the UNMAPPED colour-way (3) ────────────────
+    await gotoAndExpect(page, '/beam-receipts/new');
+    await page
+      .getByRole('group', { name: 'beam origin' })
+      .getByRole('button', { name: 'In-house', exact: true })
+      .click();
+    await fillByLabel(page, 'beam number, items.0', beamNumber);
+    // Must be set BEFORE opening the dialog — no live resync (see STEP 4's
+    // note in test 1 on the same rule).
+    await fillByLabel(page, 'net weight, items.0', String(NET_WEIGHT));
+
+    await clickButton(page, 'prefill from design, item 1');
+    await selectByAriaLabel(page, 'select design', designName);
+    await expect(page.getByRole('radiogroup', { name: 'colour-way' })).toBeVisible();
+    await page.getByRole('radio', { name: 'Colour-way 3', exact: false }).click();
+
+    const note = page.locator('[aria-label="unmapped shades note"]');
+    await expect(note).toBeVisible();
+    await expect(note).toContainText(COLOURWAY_COPY.prefillNoteTail);
+
+    const groupLabels = ['A', 'B', 'C', 'D'] as const;
+    for (const label of groupLabels) {
+      await expect(
+        page.locator(`[aria-label="${COLOURWAY_COPY.perGroupPickerAriaLabel(label)}"]`),
+      ).toBeVisible();
+    }
+
+    const applyButton = page.getByRole('button', { name: 'Apply', exact: true });
+    await expect(applyButton).toBeDisabled();
+
+    // Mixed recovery (rev 2 legitimizes the sentinel as a valid answer): a
+    // real SKU on group A, the sentinel on the rest. Apply stays disabled
+    // until every one of the 4 unmapped groups is answered.
+    await selectByAriaLabel(page, COLOURWAY_COPY.perGroupPickerAriaLabel('A'), skuLabel);
+    await expect(applyButton).toBeDisabled();
+    await selectByAriaLabel(
+      page,
+      COLOURWAY_COPY.perGroupPickerAriaLabel('B'),
+      SENTINEL_OPTION_LABEL,
+    );
+    await selectByAriaLabel(
+      page,
+      COLOURWAY_COPY.perGroupPickerAriaLabel('C'),
+      SENTINEL_OPTION_LABEL,
+    );
+    await expect(applyButton).toBeDisabled();
+    await selectByAriaLabel(
+      page,
+      COLOURWAY_COPY.perGroupPickerAriaLabel('D'),
+      SENTINEL_OPTION_LABEL,
+    );
+    await expect(applyButton).toBeEnabled();
+
+    await clickButton(page, 'Apply');
+
+    // mergeDuplicateYarnRows collapses by yarn key: A's real-SKU row stays
+    // distinct, B+C+D (all sentinel) merge into one row — 2 rows, not 4.
+    await expect(page.locator('[aria-label="yarn sku, items.0.yarns.0"]')).toHaveText(skuLabel);
+    await expect(page.locator('[aria-label="yarn sku, items.0.yarns.1"]')).toHaveText(
+      SENTINEL_OPTION_LABEL,
+    );
+    await expect(page.locator('[aria-label="yarn quantity, items.0.yarns.2"]')).toHaveCount(0);
+
+    const qtyA = Number(
+      await page.locator('[aria-label="yarn quantity, items.0.yarns.0"]').inputValue(),
+    );
+    const qtyRest = Number(
+      await page.locator('[aria-label="yarn quantity, items.0.yarns.1"]').inputValue(),
+    );
+    expect(qtyA + qtyRest).toBeCloseTo(NET_WEIGHT, 3);
+
+    // ── Regression: a FULLY-MAPPED colour-way (1) shows no note and Apply is
+    // immediately available — O1's usage-time gate must not turn every
+    // prefill into a block, only ones with an actual unmapped cell.
+    await clickButton(page, 'prefill from design, item 1');
+    await page.getByRole('radio', { name: 'Colour-way 1', exact: false }).click();
+    await expect(page.locator('[aria-label="unmapped shades note"]')).toHaveCount(0);
+    await expect(applyButton).toBeEnabled();
+
+    await clickButton(page, 'Apply');
+    await expect(page.locator('[aria-label="yarn sku, items.0.yarns.0"]')).toHaveText(skuLabel);
+    await expect(page.locator('[aria-label="yarn quantity, items.0.yarns.1"]')).toHaveCount(0);
   },
 );
