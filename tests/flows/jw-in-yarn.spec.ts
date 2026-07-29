@@ -169,6 +169,11 @@ async function receiveLot(
   await fillByLabel(page, 'Search OUT challan no', outChallanNo);
   const eligibleOption = page.getByRole('option', { name: outChallanNo });
   await expect(eligibleOption).toBeVisible();
+  // Source options identify by quality + SKU, not lot number alone
+  // (shared 1.11.0: denormalized qualityName/skuName on EligibleOutItem).
+  await expect(eligibleOption).toContainText(
+    `${src.lot_number} · ${src.quality_name} · ${src.sku_name}`,
+  );
   await eligibleOption.click();
   // Picking the source prefills Consumed with min(pendingAtJW, uncovered
   // need) — here pending == net == q, so no manual fill: the receipt below
