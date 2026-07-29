@@ -219,9 +219,13 @@ test(
     );
     expect(receivingFloor, 'seed must provide a second active floor to receive into').not.toBeNull();
 
-    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
-
     // Two-sided delta, keyed exactly as applyChallanInYarnLedger writes them.
+    // Read BEFORE opening the position, not assumed zero: this job
+    // worker/lot key is deterministically "first eligible" and shared across
+    // this whole file (and possibly other spec files) — another test's
+    // undrained position can leave residual here, so only the DELTA this
+    // test's own open introduces is asserted, same scoping principle E3
+    // applied to stock-transfer.spec.ts's source query.
     const jwKey = {
       lotNumber: src!.lot_number,
       skuId: src!.sku_id,
@@ -234,9 +238,12 @@ test(
       skuId: src!.sku_id,
       floorId: receivingFloor!.floor_id,
     };
+    const jwBeforeOpen = await db.ledgerBalance(jwKey);
+
+    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
 
     const jwBefore = await db.ledgerBalance(jwKey);
-    expect(jwBefore).toBeCloseTo(Q, 3);
+    expect(jwBefore - jwBeforeOpen).toBeCloseTo(Q, 3);
     const floorBefore = await db.ledgerBalance(floorKey);
 
     await receiveLot(page, src!, outChallanNo, receivingFloor!, Q);
@@ -382,6 +389,26 @@ test(
     );
     expect(receivingFloor, 'seed must provide an active floor to receive into').not.toBeNull();
 
+    // Keyed exactly as applyChallanInYarnLedger writes them. Read BEFORE
+    // opening either position — see the two-sided-ledger-delta test above for
+    // why this key cannot be assumed to start at zero.
+    const jwKeyRed = {
+      lotNumber: srcRed!.lot_number,
+      skuId: srcRed!.sku_id,
+      qualityId: srcRed!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwKeyBlue = {
+      lotNumber: srcBlue!.lot_number,
+      skuId: srcBlue!.sku_id,
+      qualityId: srcBlue!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwRedBeforeOpen = await db.ledgerBalance(jwKeyRed);
+    const jwBlueBeforeOpen = await db.ledgerBalance(jwKeyBlue);
+
     const outNoRed = await openJwPosition(page, jobWorker!, srcRed!, 'Twisting', Q_RED);
     const outNoBlue = await openJwPosition(page, jobWorker!, srcBlue!, 'Twisting', Q_BLUE);
 
@@ -444,24 +471,10 @@ test(
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
     await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
 
-    const jwKeyRed = {
-      lotNumber: srcRed!.lot_number,
-      skuId: srcRed!.sku_id,
-      qualityId: srcRed!.quality_id,
-      floorId: null,
-      jobWorkerId: jobWorker!.id,
-    };
-    const jwKeyBlue = {
-      lotNumber: srcBlue!.lot_number,
-      skuId: srcBlue!.sku_id,
-      qualityId: srcBlue!.quality_id,
-      floorId: null,
-      jobWorkerId: jobWorker!.id,
-    };
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
-    expect(jwRedBefore).toBeCloseTo(Q_RED, 3);
-    expect(jwBlueBefore).toBeCloseTo(Q_BLUE, 3);
+    expect(jwRedBefore - jwRedBeforeOpen).toBeCloseTo(Q_RED, 3);
+    expect(jwBlueBefore - jwBlueBeforeOpen).toBeCloseTo(Q_BLUE, 3);
 
     await clickButton(page, 'Save receipt');
     await expectToast(page, /^Saved /);
@@ -658,6 +671,26 @@ test(
     );
     expect(receivingFloor, 'seed must provide an active floor to receive into').not.toBeNull();
 
+    // Keyed exactly as applyChallanInYarnLedger writes them. Read BEFORE
+    // opening either position — see the two-sided-ledger-delta test above for
+    // why this key cannot be assumed to start at zero.
+    const jwKeyRed = {
+      lotNumber: srcRed!.lot_number,
+      skuId: srcRed!.sku_id,
+      qualityId: srcRed!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwKeyBlue = {
+      lotNumber: srcBlue!.lot_number,
+      skuId: srcBlue!.sku_id,
+      qualityId: srcBlue!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwRedBeforeOpen = await db.ledgerBalance(jwKeyRed);
+    const jwBlueBeforeOpen = await db.ledgerBalance(jwKeyBlue);
+
     const outNoRed = await openJwPosition(page, jobWorker!, srcRed!, 'Twisting', Q_RED);
     const outNoBlue = await openJwPosition(page, jobWorker!, srcBlue!, 'Twisting', Q_BLUE);
 
@@ -701,24 +734,10 @@ test(
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
     await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
 
-    const jwKeyRed = {
-      lotNumber: srcRed!.lot_number,
-      skuId: srcRed!.sku_id,
-      qualityId: srcRed!.quality_id,
-      floorId: null,
-      jobWorkerId: jobWorker!.id,
-    };
-    const jwKeyBlue = {
-      lotNumber: srcBlue!.lot_number,
-      skuId: srcBlue!.sku_id,
-      qualityId: srcBlue!.quality_id,
-      floorId: null,
-      jobWorkerId: jobWorker!.id,
-    };
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
-    expect(jwRedBefore).toBeCloseTo(Q_RED, 3);
-    expect(jwBlueBefore).toBeCloseTo(Q_BLUE, 3);
+    expect(jwRedBefore - jwRedBeforeOpen).toBeCloseTo(Q_RED, 3);
+    expect(jwBlueBefore - jwBlueBeforeOpen).toBeCloseTo(Q_BLUE, 3);
 
     // Attempt to save with the SKU unanswered: blocked, zero delta on both
     // at-JW positions, no redirect.
