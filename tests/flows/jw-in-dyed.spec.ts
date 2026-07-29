@@ -34,22 +34,16 @@ import type { Db } from '../../fixtures/db';
 // every `details.code` assertion below is an exact match against a
 // different, still-valid code, which is what proves it never appears.
 //
-// FE mirror (fe@5b84a3d) covers: the sentinel option showing disabled (with
-// DYED_LOT_SKU_REQUIRED as its title) on dyed rows, and a submit-time block
-// if a dyed row somehow still holds the sentinel. OPEN DISCREPANCY reported
-// to lead 2026-07-29: the plan says the free-text `shade, lots.N` input is
-// "retired"/"GONE" for dyed lots, but fe@5b84a3d's diff shows ReceivedLotsGrid's
-// shadeNo `ScalarCell` untouched — it is still rendered, and still becomes
-// enabled + `required` (amber ring) once a row turns dyed, exactly the
-// pre-O4 shape. Its typed value is silently discarded server-side either
-// way (derivation always wins), so ledger/detail correctness is unaffected,
-// but the UX still visually demands input the server ignores, and a value
-// typed while dyed survives (disabled, not unregistered) if the row later
-// stops being dyed, which can reach a `SHADE_NO_NOT_ALLOWED` 400 the user
-// has no visible way to clear — a reachable dead end, not merely cosmetic.
-// Neither test below asserts the cell's presence/absence pending that
-// ruling; the derivation contract is verified independently via the
-// persisted `shade_no` / response body, which do not depend on that cell.
+// FE mirror covers: the sentinel option showing disabled (with
+// DYED_LOT_SKU_REQUIRED as its title) on dyed rows, a submit-time block if a
+// dyed row somehow still holds the sentinel, AND (fe@499cde4, following a
+// discrepancy this file's earlier revision flagged against fe@5b84a3d,
+// which only did the first two) the Shade column/cell retired entirely —
+// there is no shadeNo input anywhere in the grid, dyed row or not, and the
+// mapper never sends a `shadeNo` key. Verified below via column/label
+// absence. The derivation contract itself is verified independently via the
+// persisted `shade_no` column / response body, which never depended on that
+// cell.
 test(
   '/jw-challans-in/new/dyed redirects to the consolidated form (dyed is not a separate route)',
   async ({ page }) => {
@@ -304,6 +298,12 @@ test(
     await expect(eligibleOption).toBeVisible();
     await eligibleOption.click();
     await fillByLabel(page, 'consumed quantity, lots.0.sources.0', String(Q));
+
+    // The row is now dyed. Retired shadeNo column/cell (fe@499cde4): no
+    // "Shade" header and no `shade, lots.0` labeled element anywhere in the
+    // grid — the column was removed outright, not merely disabled.
+    await expect(page.getByRole('columnheader', { name: 'Shade' })).toHaveCount(0);
+    await expect(page.getByLabel('shade, lots.0')).toHaveCount(0);
 
     // Place the full quantity via the always-visible Place-stock region.
     await clickButton(page, 'Add placement');
