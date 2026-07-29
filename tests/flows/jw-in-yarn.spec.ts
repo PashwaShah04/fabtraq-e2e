@@ -506,3 +506,108 @@ test(
     await expect(sourcesTable.getByText(outNoBlue)).toBeVisible();
   },
 );
+
+// E4 Test A (D2 prefill): when a lot's sources all agree on one real SKU, the
+// answer arrives without a manual pick (ReceivedLotsGrid.tsx SkuCell effect,
+// deriveAgreedSku). This is the ergonomic half of the spec and easy to ship
+// broken, because a prefill that silently fails just looks like a field the
+// user has to fill in — so this test deliberately never touches `sku,
+// lots.0` itself, reading only the trigger's rendered text and, after save,
+// the minted lot's own ledger row.
+test(
+  'JW-in prefills the lot SKU from a single agreeing source, and the floor-credit leg carries it without a manual pick',
+  async ({ page, db }) => {
+    const Q = 10;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
+
+    const receivingFloor = await db.queryOne<{
+      loc_code: string;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT l.code AS loc_code, l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM location_floors f JOIN locations l ON l.id = f.location_id
+       WHERE f.id <> $1 AND l.status = 'active' AND f.status = 'active'
+       ORDER BY f.id LIMIT 1`,
+      [src!.floor_id],
+    );
+    expect(receivingFloor, 'seed must provide a second active floor to receive into').not.toBeNull();
+
+    // Twisting deliberately — non-dyed. O4's dyed-lot rule (sentinel
+    // disabled on a dyed row) is E10's territory; a dyed source here would
+    // assert the opposite of what E10 pins.
+    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
+
+    await gotoAndExpect(page, '/jw-challans-in/new');
+    await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
+
+    // Quality and net weight only — `sku, lots.0` is left untouched on
+    // purpose so the prefill below is the only thing that can answer it.
+    await selectByAriaLabel(page, 'quality, lots.0', `${src!.quality_code} – ${src!.quality_name}`);
+    await fillByLabel(page, 'net weight, lots.0', String(Q));
+
+    await page.getByLabel('add source, lots.0').click();
+    await page.getByLabel('source, lots.0.sources.0', { exact: true }).click();
+    await fillByLabel(page, 'Search OUT challan no', outChallanNo);
+    const eligibleOption = page.getByRole('option', { name: outChallanNo });
+    await expect(eligibleOption).toBeVisible();
+    await eligibleOption.click();
+    await expect(page.getByLabel('consumed quantity, lots.0.sources.0')).toHaveValue(String(Q));
+
+    // D2 prefill: the lone active source agrees with itself, so the SKU
+    // answer arrives on its own. Read the trigger's rendered text rather
+    // than selecting it.
+    await expect(page.locator('[aria-label="sku, lots.0"]')).toHaveText(skuLabelOf(src!));
+
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select location',
+      `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
+    );
+    await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
+    await fillByLabel(page, 'placement quantity 1', String(Q));
+
+    const floorKey = {
+      qualityId: src!.quality_id,
+      skuId: src!.sku_id,
+      floorId: receivingFloor!.floor_id,
+    };
+    const floorBefore = await db.ledgerBalance(floorKey);
+
+    // Save WITHOUT ever setting the SKU manually — if the prefill only
+    // painted the UI without reaching form state, this submit would be
+    // blocked by the answer-required gate.
+    await clickButton(page, 'Save receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-in\/[^/]+$/);
+
+    const floorAfter = await db.ledgerBalance(floorKey);
+    expect(floorAfter - floorBefore).toBeCloseTo(Q, 3);
+
+    // Precise oracle: the minted lot's own floor-credit row carries the
+    // agreed SKU, not null — the failure mode worth catching is a prefill
+    // that reaches the payload as the WRONG id, which the delta above
+    // wouldn't distinguish from a correct save.
+    const challanId = page.url().split('/').pop();
+    const mintedLotRow = await db.queryOne<{ lot_no: string }>(
+      `SELECT lot_no FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [challanId],
+    );
+    expect(mintedLotRow, 'the JW-in must mint exactly one yarn item row').not.toBeNull();
+    const ledgerRow = await db.queryOne<{ sku_id: string | null }>(
+      `SELECT sku_id FROM stock_ledger WHERE lot_number = $1 AND floor_id = $2 ORDER BY created_at DESC LIMIT 1`,
+      [mintedLotRow!.lot_no, receivingFloor!.floor_id],
+    );
+    expect(ledgerRow, 'the minted lot must carry a floor-credit stock_ledger row').not.toBeNull();
+    expect(ledgerRow!.sku_id).toBe(src!.sku_id);
+  },
+);
