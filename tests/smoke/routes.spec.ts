@@ -30,6 +30,7 @@ const ROUTES = [
   '/place-stock',
   '/stock-transfers',
   '/audit-log',
+  '/weaving-dispatches',
 ] as const;
 
 for (const route of ROUTES) {
