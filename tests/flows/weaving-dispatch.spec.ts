@@ -67,11 +67,25 @@ async function createReceivedBeam(
 // name ("Cancel dispatch"), so a name-only click after the dialog opens
 // would hit a Playwright strict-mode ambiguity. Scope the second click to
 // the dialog (Radix renders role="alertdialog").
+// Must wait for the mutation's own response before returning — the confirm
+// click resolves synchronously in Playwright, but the ledger-reversal write
+// happens server-side inside the async POST. Without this wait, a caller's
+// immediately-following db.ledgerBalance() read races the request and
+// observes the pre-cancel state (caught live: cancel appeared to not
+// reverse the floor leg, which was actually this race, not a BE bug).
 async function cancelDispatch(page: import('@playwright/test').Page): Promise<void> {
   await clickButton(page, 'Cancel dispatch');
   const dialog = page.getByRole('alertdialog');
   await expect(dialog).toBeVisible();
-  await dialog.getByRole('button', { name: 'Cancel dispatch' }).click();
+  await Promise.all([
+    page.waitForResponse(
+      (res) =>
+        res.request().method() === 'POST' &&
+        /\/weaving-dispatches\/[^/]+\/cancel$/.test(new URL(res.url()).pathname) &&
+        res.status() === 200,
+    ),
+    dialog.getByRole('button', { name: 'Cancel dispatch' }).click(),
+  ]);
 }
 
 test(
@@ -202,20 +216,30 @@ test(
     expect(beamAfterDispatch!.weaver_id).toBe(jobWorkerA!.id);
     expect(beamAfterDispatch!.issued_challan_no).toBeTruthy();
 
+    // JWB is visible on screen (PageHeader title falls back to beamChallanNo
+    // first — weaving-dispatch-detail.page.tsx:127), so it can be captured
+    // from the DOM. JWO has no on-screen representation at all: both print
+    // blocks carry Tailwind's `hidden` class and only lift under `@media
+    // print` (weaving-dispatch-detail.page.tsx:104-116), which is the
+    // intended design (spec §4: "two print blocks... one Print button
+    // each"), not a bug — window.print()-gated content, not an accessible-
+    // name mismatch. Derive jwoNo from the DB via the dispatch's own FK
+    // instead, which is the stronger assertion anyway (proves the row is
+    // actually linked, not just that some text on the page matches a regex).
     const jwbNo = await captureDocNo(page.getByRole('main'), /\bJWB-\d{4}-\d{2}-\d{3,}\b/);
-    const jwoNo = await captureDocNo(page.getByRole('main'), /\bJWO-\d{4}-\d{2}-\d{3,}\b/);
     expect(beamAfterDispatch!.issued_challan_no).toBe(jwbNo);
 
     const dispatchRow = await db.queryOne<{ weft_challan_out_id: string | null }>(
       `SELECT weft_challan_out_id FROM weaving_dispatches WHERE id = $1`,
       [dispatchId],
     );
-    const weftChallan = await db.queryOne<{ id: string }>(
-      `SELECT id FROM jw_challans_out WHERE challan_no = $1`,
-      [jwoNo],
+    expect(dispatchRow!.weft_challan_out_id, 'the dispatch must link a weft challan').not.toBeNull();
+    const weftChallan = await db.queryOne<{ challan_no: string }>(
+      `SELECT challan_no FROM jw_challans_out WHERE id = $1`,
+      [dispatchRow!.weft_challan_out_id],
     );
-    expect(weftChallan, 'the captured JWO number must resolve to a real jw_challans_out row').not.toBeNull();
-    expect(dispatchRow!.weft_challan_out_id).toBe(weftChallan!.id);
+    expect(weftChallan, 'the linked weft_challan_out_id must resolve to a real jw_challans_out row').not.toBeNull();
+    expect(weftChallan!.challan_no).toMatch(/^JWO-\d{4}-\d{2}-\d{3,}$/);
 
     // Both sections rendered: the "Beams"/"Weft" h2 section headings are
     // always visible on-screen (the dedicated print-only h1 headers
@@ -296,8 +320,15 @@ test('weaving type is not offered on the plain JW-Out form', async ({ page }) =>
   await gotoAndExpect(page, '/jw-challans-out/new');
   await expect(page.getByRole('heading', { name: 'New Job Work Challan Out' })).toBeVisible();
   // Positive anchor: a sibling operation checkbox that has always been there —
-  // proves JobWorkTypeMultiSelect actually mounted, not just that the page didn't 500.
-  await expect(page.getByRole('checkbox', { name: 'Twisting', exact: true })).toBeVisible();
+  // proves JobWorkTypeMultiSelect actually mounted, not just that the page
+  // didn't 500. No `exact: true`: the wrapping `<Field label="Operations *">`
+  // (jw-challan-out-form.page.tsx:375-382) is a single <label> around the
+  // whole 5-checkbox group — pre-existing, not introduced by this workstream
+  // — so Chromium's accname computation folds "Operations * Job work types"
+  // into the FIRST checkbox's name only ("Operations * Job work types
+  // Twisting"), not the later ones ("Gassing", "Warping", ...). A substring
+  // match is the correct fix here, not exact.
+  await expect(page.getByRole('checkbox', { name: 'Twisting' })).toBeVisible();
   // The guard under test: Weaving must be gone, not merely unchecked
   // (JobWorkTypeMultiSelect.tsx filters it out of SELECTABLE_JOB_WORK_TYPES —
   // weaving challans are only ever created via Weaving Dispatch, spec §3.2).
