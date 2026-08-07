@@ -109,6 +109,18 @@ test(
     // WD-L3/spec §3.3's L18 predicate fix makes any non-beam-track lot valid
     // weft input, not just raw, and restricting to raw here would under-test
     // that fix.
+    //
+    // Also deliberately WITHOUT jw-out.spec.ts's `s.job_worker_id IS NULL`
+    // filter: per fabtraq-be's position-custody.ts (B-015), a row with a
+    // non-null floorId IS a floor position regardless of jobWorkerId — a
+    // challan-out floor-debit leg keeps its source floorId while stamping the
+    // destination jobWorkerId as provenance. Filtering job_worker_id IS NULL
+    // here would exclude such debit legs from the SUM and overstate the
+    // floor's real balance (caught live in the full suite: this query
+    // reported >=10kg on a floor the FE's own custody-normalized "available"
+    // figure — and db.ledgerBalance(floorKey) below, which correctly omits
+    // any jobWorkerId filter — showed only 7kg once an earlier spec's
+    // debit leg had landed on the same floor position).
     const src = await db.queryOne<{
       lot_number: string;
       sku_id: string;
@@ -132,7 +144,6 @@ test(
        JOIN yarn_skus sku ON sku.id = s.sku_id
        WHERE s.lot_number IS NOT NULL
          AND s.sku_id IS NOT NULL
-         AND s.job_worker_id IS NULL
          AND l.status = 'active' AND f.status = 'active'
          AND q.status = 'active' AND sku.status = 'active'
        GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
