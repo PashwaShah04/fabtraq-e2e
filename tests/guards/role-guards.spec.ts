@@ -48,6 +48,11 @@ const ROUTES: readonly GuardedRoute[] = [
     heading: 'New Beam Receipt',
     allowedRoles: ['owner', 'storekeeper', 'accountant'],
   },
+  {
+    path: '/weaving-dispatches/new',
+    heading: 'New Weaving Dispatch',
+    allowedRoles: ['owner', 'storekeeper'],
+  },
 ];
 
 function escapeRegExp(value: string): string {
