@@ -219,7 +219,7 @@ async function clickConfirmAndWait(
   page: Page,
   triggerLabel: string,
   responseUrlPattern: RegExp,
-): Promise<import('@playwright/test').APIResponse> {
+): Promise<import('@playwright/test').Response> {
   await clickButton(page, triggerLabel);
   const dialog = page.getByRole('alertdialog');
   await expect(dialog).toBeVisible();
@@ -407,6 +407,19 @@ test(
     // receipts, resolution #7). Field renders label+value as sibling <span>s
     // with no dedicated aria-label (same shape as the existing Set
     // Length/Net Weight fields) — locate by the label text's parent.
+    // CAUTION (verify live, Task 4): if `Field`'s sibling-span container also
+    // happens to sit next to a "Set Length"/total-meters value that shares a
+    // substring with the expected remaining figure (worst case here: beam1's
+    // total IS 100, same as its own post-cancel remaining), a `toContainText`
+    // match through an over-wide parent locator could pass for the wrong
+    // reason. If the live run shows `.locator('..')` isn't tightly scoped to
+    // just this Field's two spans, replace these four assertions with a DB
+    // oracle instead: `SELECT COALESCE(SUM(metersAttributed),0) FROM
+    // weaving_in_taka_beams wtb JOIN weaving_ins wi ON wi.id = wtb.weaving_in_id
+    // WHERE wtb.beam_id = $1 AND wi.status != 'cancelled'` and assert
+    // `beamTotalMeters - that sum` directly — same "assert the underlying
+    // state, not a wording pattern" rule this suite already applies to
+    // ledger deltas and doc numbers.
     await gotoAndExpect(page, `/beams/${beam1.id}`);
     await expect(page.getByText('Remaining Meters', { exact: true }).locator('..')).toContainText('20');
     await gotoAndExpect(page, `/beams/${beam2.id}`);
@@ -427,18 +440,21 @@ test(
     await gotoAndExpect(page, `/beams/${beam2.id}`);
     await expect(page.getByText('Remaining Meters', { exact: true }).locator('..')).toContainText('80');
 
-    // RE-RECEIVE — a second, independent weaving-in against beam1 only (no
-    // beam-attribution popover needed: a single challan-level beam makes the
-    // per-taka attribution unambiguous). Its role is purely to produce a
-    // second NON-cancelled receipt + WeavingInTakaBeam link, so the guard
-    // checks below (beam close, dispatch-cancel-blocked) have something real
-    // to trip on.
+    // RE-RECEIVE — a second, independent weaving-in against beam1 only. Its
+    // role is purely to produce a second NON-cancelled receipt +
+    // WeavingInTakaBeam link, so the guard checks below (beam close,
+    // dispatch-cancel-blocked) have something real to trip on. Beam
+    // allocation is still set explicitly via the same popover as every taka
+    // above — nothing in the spec or locked resolutions promises an implicit
+    // single-beam default, and §3.2 validation #1 (`Σ metersAttributed per
+    // taka = taka.meters`) is enforced against whatever WeavingInTakaBeam
+    // rows actually get written, not against what the picker happens to have
+    // selected. Reusing fillTaka(0, ...) keeps this identical to the
+    // attribution contract already exercised above.
     await gotoAndExpect(page, '/weaving-ins/new');
     await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
-    await selectByAriaLabel(page, 'fabric design, takas.0', fabricDesign.code);
-    await fillByLabel(page, 'meters, takas.0', '10');
-    await fillByLabel(page, 'weight, takas.0', '2.5');
+    await fillTaka(0, { meters: 10, weightKg: 2.5, attribution: [{ beamNumber: beam1.beamNumber, meters: 10 }] });
     await fillByLabel(page, 'Entered weft kg', '1');
     await clickButton(page, 'Save receipt');
     await expectToast(page, /^Saved /);
