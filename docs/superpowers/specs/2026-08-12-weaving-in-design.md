@@ -87,12 +87,12 @@ model WeavingInWeftSource {                        // WI-L15 — JW-In precedent
 Plus: `WeavingDispatchBeam.beamTotalMeters Decimal?` (WI-L6 — prefilled from `setLength` at issue; backfillable via `updatePrintFields`; **required before first receipt** against that beam).
 
 - **Taka serials:** `ChallanNumberSequence` reused with `prefix='TAKA'`, key string `"<FY>:<weaverId>"` (column is unconstrained; LOT/TXF precedent). Minted inside the create `$transaction` → gapless; cancelled receipts keep their serials (audit).
-- **No `StockTransactionType` addition.** Fabric never enters `stock_ledger`; only the weft **drain** writes ledger rows (JW-debit-only, `applyChallanInBeamLedger` row convention).
+- **`StockTransactionType` gains `weaving_in`** for the weft-drain rows (amended 2026-08-13: `beam_receipt` precedent — each receipt aggregate tags its own ledger rows; reusing `challan_in` would break queries that join that type to `jw_challans_in`). Fabric itself never enters `stock_ledger`; only the weft **drain** writes rows (JW-debit-only, `applyChallanInBeamLedger` row convention, `transactionId = weavingInId`, cancellation via the standard `notes='cancellation'` reversal rows).
 
 ## 3. Backend behavior
 
 ### 3.1 FabricDesign master (`/fabric-designs`)
-Standard master module (job-worker anatomy): CRUD, `isActive` toggle, registry-first endpoints in `fabtraq-shared/src/registry/master/fabric-designs.registry.ts`. Roles: owner (write) / all (read) — same as other masters.
+Standard master module (job-worker anatomy): CRUD, `isActive` toggle, registry-first endpoints in `fabtraq-shared/src/registry/master/fabric-designs.registry.ts`. Roles: writes `['owner','storekeeper']`, reads auth-only (amended 2026-08-13 to match the actual master convention in `designs.registry.ts`/`job-workers.registry.ts`).
 
 ### 3.2 Weaving In create (`POST /weaving-ins`, one `$transaction`)
 1. Validate: weaver active; every taka's `fabricDesignId` active; every linked beam `status='issued_to_weaver'` AND `weaverId = header weaver` AND `beamTotalMeters` set; `Σ metersAttributed per taka = taka.meters`; per-beam cumulative drain (existing links + this challan) `≤ beamTotalMeters` (small tolerance, +2%).
