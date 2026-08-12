@@ -170,6 +170,9 @@ test(
     // are keyed by beamNumber, not a row index ("Select beam <no>", "Gross
     // weight for beam <no>", "Pipe weight for beam <no>").
     await page.getByLabel('Show beams for all weavers').check();
+    // Narrow the table via the search box (BeamPickerTable "Search beams")
+    // before ticking — covers the client-side beam-number filter live.
+    await page.getByLabel('Search beams').fill(beamNumber);
     await page.getByLabel(`Select beam ${beamNumber}`).check();
     await page.getByLabel(`Gross weight for beam ${beamNumber}`).fill('52');
     await page.getByLabel(`Pipe weight for beam ${beamNumber}`).fill('2');
