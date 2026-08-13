@@ -53,6 +53,16 @@ const ROUTES: readonly GuardedRoute[] = [
     heading: 'New Weaving Dispatch',
     allowedRoles: ['owner', 'storekeeper'],
   },
+  {
+    path: '/weaving-ins/new',
+    heading: 'New Weaving In',
+    allowedRoles: ['owner', 'storekeeper'],
+  },
+  {
+    path: '/fabric-designs/new',
+    heading: 'New Fabric Design',
+    allowedRoles: ['owner', 'storekeeper'],
+  },
 ];
 
 function escapeRegExp(value: string): string {
