@@ -68,6 +68,10 @@ serial — `weaving-in.mapper.ts:28` is unchanged.
   (no URL state → the deep link would be ignored).
 - `PlaceTakaDialog` uses `shared/components/LocationFloorSelect.tsx` verbatim (4 props, omit
   `excludeFloorIds`). **Never** `AvailableFloorSelect`.
+  **Note its prop types use an empty-string sentinel** — `locationId: LocationId | ''`,
+  `floorId: LocationFloorId | ''`, not `| undefined`. Hold dialog state as
+  `useState<LocationId | ''>('')`. Where the weaving-in form's *optional* header fields feed it, a
+  cast at that one boundary is expected and correct — it is not a mistake to "fix".
 - Selection: `Set<FabricTakaId>` held in the page; native `<input type="checkbox">`
   (`job-worker-form.page.tsx:279-289` precedent) inside a column cell with `stopPropagation`.
   **`DataTable.tsx` is not modified.**
@@ -78,6 +82,13 @@ serial — `weaving-in.mapper.ts:28` is unchanged.
   taka row in `mapFormToCreateWeavingInInput`.
 - Fabric tab: rows link `/fabric-takas?fabricDesignId=<id>`; count column relabelled `Received`.
 - Nav: `Inventory → Fabric Takas`, after `Lots`.
+- **URL params the register MUST read** (added 2026-08-14 after the e2e plan exposed the gap):
+  `search`, `fabricDesignId`, `jobWorkerId`, `placement`, `status` **and `weavingInId`**. The last
+  one has no filter control in the UI — it is a deep-link-only param, so it must be threaded through
+  `buildQuery` and preserved by `setParams` even though nothing on screen sets it. The e2e spec
+  relies on `/fabric-takas?weavingInId=<id>` to assert "these N taka", and the weaving-in receipt
+  detail page links to it. Do not assume it falls out of the `inventory-lots.page.tsx` template
+  automatically — it does not.
 
 ## e2e
 
@@ -87,6 +98,12 @@ serial — `weaving-in.mapper.ts:28` is unchanged.
 - **Ledger deltas, never absolutes** (README.md:77) — though this feature writes no ledger rows, the
   Fabric-tab placed/unplaced assertions must be **deltas** for the same repeat-run reason.
 - Full `npm run e2e` resets + reseeds `fabtraq_dev`; single-spec runs do not.
+- **Use the existing `selectByAriaLabel` helper** (`support/forms.ts`) for every shadcn Select,
+  including the ones inside `PlaceTakaDialog`. Do NOT target `getByRole('combobox')` — the helper
+  exists precisely because this codebase's Radix `SelectTrigger` role is not reliable to assert on.
+- The register's `LocationFloorSelect` inside the dialog needs the dialog scoped first
+  (`page.getByRole('dialog')`) before selecting, since the register page behind it may carry
+  same-named controls.
 
 ## Global constraints (all repos)
 
