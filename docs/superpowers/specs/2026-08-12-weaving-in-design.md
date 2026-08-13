@@ -69,10 +69,11 @@ model FabricTaka {
 }
 
 model WeavingInTakaBeam {                          // M:N with attribution (WI-L4)
+  id              String  @id @default(uuid())     // amended 2026-08-13: shared response contract carries a branded row id (WeavingDispatchBeam precedent)
   takaId          String
   beamId          String
   metersAttributed Decimal @db.Decimal(10, 2)
-  @@id([takaId, beamId])
+  @@unique([takaId, beamId])
 }
 
 model WeavingInWeftSource {                        // WI-L15 — JW-In precedent
