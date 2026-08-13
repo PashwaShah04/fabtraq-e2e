@@ -24,7 +24,18 @@ async function readFabricTabCounts(
   designCode: string,
   designName: string,
 ): Promise<{ placed: number; unplaced: number }> {
-  await gotoAndExpect(page, '/inventory?tab=fabric');
+  // useFabricStockAggregate carries staleTime: 30_000 — reading the DOM
+  // right after gotoAndExpect (which only waits for the nav landmark, not
+  // this data fetch) races a still-loading/empty table against the actual
+  // GET /weaving-ins/fabric-stock response. Wait for that response before
+  // reading so before/after pairs in the same test (well within 30s of each
+  // other) never race the fetch this table depends on.
+  await Promise.all([
+    page.waitForResponse(
+      (r) => r.request().method() === 'GET' && new URL(r.url()).pathname === '/weaving-ins/fabric-stock',
+    ),
+    gotoAndExpect(page, '/inventory?tab=fabric'),
+  ]);
   const row = page.getByRole('row', { name: new RegExp(`${designCode} .* ${designName}`) });
   if ((await row.count()) === 0) return { placed: 0, unplaced: 0 };
   const text = (await row.first().textContent()) ?? '';
@@ -250,7 +261,7 @@ test(
     // ?fabricDesignId=<id> — "these 13 taka" per design spec §3.1).
     await gotoAndExpect(page, `/fabric-takas?weavingInId=${receiptId}`);
     for (const serial of [s1, s2, s3]) {
-      const checkbox = page.getByRole('checkbox', { name: `Select taka, paper serial ${serial}` });
+      const checkbox = page.getByRole('checkbox', { name: `Select ${frcNo} / ${serial}` });
       await expect(checkbox).toBeVisible();
       const row = checkbox.locator('xpath=ancestor::tr[1]');
       await expect(row).toContainText(placeAt.floor_name);
@@ -263,18 +274,20 @@ test(
     // register, not just this receipt.
     await gotoAndExpect(page, '/fabric-takas');
     await page.getByLabel('Search records').fill(s3);
-    const s3Checkbox = page.getByRole('checkbox', { name: `Select taka, paper serial ${s3}` });
+    const s3Checkbox = page.getByRole('checkbox', { name: `Select ${frcNo} / ${s3}` });
     await expect(s3Checkbox).toBeVisible();
-    await expect(page.getByRole('checkbox', { name: `Select taka, paper serial ${s1}` })).toHaveCount(0);
+    await expect(page.getByRole('checkbox', { name: `Select ${frcNo} / ${s1}` })).toHaveCount(0);
     await page.getByLabel('Search records').fill('');
 
     // SELECT TWO (S1, S2) AND MOVE THEM to a different floor. Back on the
     // weavingInId-scoped view so all three rows are visible together.
     await gotoAndExpect(page, `/fabric-takas?weavingInId=${receiptId}`);
-    await page.getByRole('checkbox', { name: `Select taka, paper serial ${s1}` }).check();
-    await page.getByRole('checkbox', { name: `Select taka, paper serial ${s2}` }).check();
+    await page.getByRole('checkbox', { name: `Select ${frcNo} / ${s1}` }).check();
+    await page.getByRole('checkbox', { name: `Select ${frcNo} / ${s2}` }).check();
     // Running totals: 30+40=70m, 7.5+10=17.5kg over the 2 selected taka.
-    await expect(page.getByText(/2 taka · 70(\.0+)? m · 17\.5(\.0+)? kg/)).toBeVisible();
+    // Weight renders via format.kg (fixed 3 decimals, e.g. "17.500 kg" — the
+    // same formatter the Fabric tab's "22.500 kg" total already uses).
+    await expect(page.getByText(/2 taka · 70(\.0+)? m · 17\.500 kg/)).toBeVisible();
 
     await clickButton(page, 'Place selected (2)');
     const dialog = page.getByRole('dialog');
@@ -285,7 +298,7 @@ test(
       page.waitForResponse(
         (r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/fabric-takas/place',
       ),
-      dialog.getByRole('button', { name: 'Place taka' }).click(),
+      dialog.getByRole('button', { name: 'Place', exact: true }).click(),
     ]);
     expect(placeRes.status()).toBe(200);
     await expect(dialog).not.toBeVisible();
@@ -320,7 +333,9 @@ test(
     );
     expect(s3Row, 'S3 taka must exist').not.toBeNull();
     await gotoAndExpect(page, `/fabric-takas/${s3Row!.id}`);
-    const beamsSection = page.locator('section', { has: page.getByRole('heading', { name: 'Beams' }) });
+    const beamsSection = page.locator('section', {
+      has: page.getByRole('heading', { name: 'Beam Provenance' }),
+    });
     await expect(beamsSection).toContainText(beam1.beamNumber);
     await expect(beamsSection).toContainText(beam2.beamNumber);
 
@@ -350,10 +365,10 @@ test(
     // 'received', which now excludes this cancelled receipt's rows).
     await gotoAndExpect(page, `/fabric-takas?weavingInId=${receiptId}`);
     await expect(
-      page.getByRole('checkbox', { name: `Select taka, paper serial ${s1}` }),
+      page.getByRole('checkbox', { name: `Select ${frcNo} / ${s1}` }),
     ).toHaveCount(0);
     await expect(
-      page.getByRole('checkbox', { name: `Select taka, paper serial ${s3}` }),
+      page.getByRole('checkbox', { name: `Select ${frcNo} / ${s3}` }),
     ).toHaveCount(0);
   },
 );
