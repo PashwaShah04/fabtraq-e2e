@@ -92,10 +92,13 @@ commit-now/push-at-end rule.
 
 | Repo | Commits (workstream) | Gates |
 |------|----------------------|-------|
-| `fabtraq-shared` | 14 (base `09561db`), version **1.15.0** | 1121 tests green |
-| `fabtraq-be` | 25 (base `73182a5`) | 693 unit + 631 integration green |
-| `fabtraq-fe` | 21 (base `b84822f`) | 1265 tests green; coverage 93 / 87 / 86 |
-| `e2e` | 11 (base `2840d7a`) | **117/117 green**, full regression from cold start |
+| `fabtraq-shared` | 15 (base `09561db`), version **1.15.0** | 1121 tests green ᶜ |
+| `fabtraq-be` | 26 (base `73182a5`) | 693 unit + 631 integration green ᶜ |
+| `fabtraq-fe` | 23 (base `b84822f`) | **1265/1265 green; coverage 93.77 / 87.19 / 86.48 / 93.77** (stmts/branch/func/lines, thresholds 80/75/80) ᵐ |
+| `e2e` | 12 (base `2840d7a`) | **117/117 green**, full regression from cold start ᵐ |
+
+ᵐ measured in the closing session (2026-08-14). ᶜ carried forward from the implementation
+sessions — `shared` and `be` took only a docs commit at close, so their suites were not re-run.
 
 **shared** — `FRC-` entry-no triplet and branded ids; `FabricDesign` schema family + registry;
 `WeavingIn` transaction schema family + weft-position DTO; transaction registry entries; beam
@@ -160,7 +163,9 @@ implicitly).
 
 ## Verification performed
 
-- shared / BE / FE: lint, typecheck, build, full unit + integration suites, coverage thresholds.
+- FE, this session: `format:check`, `lint`, `typecheck`, `build`, and a serial full-suite coverage
+  run — all clean. shared / BE gates were run in the implementation sessions and not repeated at
+  close (docs-only commits since).
 - e2e: the weaving-in flow spec run **three consecutive times with no reseed**, specifically to
   prove the delta-assertion property rather than assume it.
 - **Full `npm run e2e` regression from a cold start: 117/117 green.**
@@ -168,9 +173,23 @@ implicitly).
   `job-work-weaving-in.jpeg` — title, challan no, weaver, paper challan no, date, the seven-column
   taka grid, totals row and signature lines all present and matching the paper layout.
 
-One known-flaky FE test (`jw-challans-in/form.page.test.tsx` — "multi-lot: the presence error is
-scoped to the unanswered row only") times out under full-suite load and passes 39/39 in isolation.
-Untouched by this sprint; noted, not fixed.
+**Pre-existing FE suite flake (not caused by this sprint, not fixed here).** The full FE suite is
+load-flaky: successive `npm run test:coverage` runs failed 1, then 4, then 3, then 1 test, with a
+*different* set each time, across `beam-receipts/form.page`, `jw-challans-in/form.page` and
+`inventory/balance.page`. Every one of them passes in isolation (70/70 for the three files
+together), and all failures are `Test timed out` under parallel load rather than assertion
+failures — some tests carry their own hardcoded 15 s timeout that loses when workers contend.
+
+Run serially (`npx vitest run --coverage --no-file-parallelism`) the suite is **1265/1265 green**,
+which is where the coverage figures above come from. Worth fixing on its own ticket: as it stands
+CI can go red for reasons unrelated to any change, and — because vitest suppresses the coverage
+report whenever a test fails — a flaky run also silently produces no coverage numbers at all.
+
+**Pre-existing FE format drift.** `npm run format:check` (CI step 4) reports style issues in **228
+files** repo-wide. This predates the sprint; `weaving-in-detail.page.tsx` was itself already
+unformatted before this sprint touched it, and has now been brought to prettier-clean. The other
+227 are left alone deliberately — reformatting them is a large unrelated diff and belongs on its
+own ticket.
 
 ---
 
