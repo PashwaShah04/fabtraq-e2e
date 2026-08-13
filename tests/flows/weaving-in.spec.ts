@@ -1,6 +1,4 @@
 import { test, expect } from '../../fixtures/test';
-import { env } from '../../fixtures/env';
-import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel,
@@ -9,87 +7,9 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
-import { getCsrfToken } from '../../support/api';
-import type { Db, LedgerKey } from '../../fixtures/db';
-import type { Page } from '@playwright/test';
-
-// Beam seed — same shape as weaving-dispatch.spec.ts's createReceivedBeam,
-// extended with setLength: WeavingDispatchBeam.beamTotalMeters "prefilled
-// from setLength at issue" (WI-L6, spec §2 line 87) — setting it here at
-// beam-receipt time means dispatch prefills beamTotalMeters automatically,
-// sidestepping the weaving-in form's inline backfill prompt (that affordance
-// is covered by BE/FE integration tests per spec §5, not required here).
-async function createReceivedBeam(
-  page: Page,
-  db: Db,
-  opts: { netWeight: number; setLength: number },
-): Promise<{ id: string; beamNumber: string }> {
-  const csrfToken = await getCsrfToken(page);
-  const beamNumber = codes.unique('BM-WVI');
-  const res = await page.request.post(`${env.API_URL}/beam-receipts`, {
-    headers: { 'X-CSRF-Token': csrfToken },
-    data: {
-      date: new Date().toISOString().slice(0, 10),
-      beamOrigin: 'purchase',
-      items: [{ beamNumber, netWeight: opts.netWeight, setLength: opts.setLength }],
-    },
-  });
-  if (res.status() !== 201) throw new Error(`beam receipt create failed: ${await res.text()}`);
-  const beam = await db.queryOne<{ id: string }>(`SELECT id FROM beams WHERE beam_number = $1`, [
-    beamNumber,
-  ]);
-  if (!beam) throw new Error('the purchase beam receipt must register a beams row');
-  return { id: beam.id, beamNumber };
-}
-
-// FabricDesign seed via direct API (this spec's job is the weaving-in
-// transaction, not re-proving FabricDesign create — that's
-// fabric-designs.spec.ts's job, DRY). expectedGlm=250 matches every taka
-// below exactly (weightKg = meters * 0.25), so no GLM-mismatch flag fires
-// and this test stays a clean happy path.
-async function createFabricDesign(
-  page: Page,
-  db: Db,
-  weftQualityId: string,
-): Promise<{ id: string; code: string }> {
-  const csrfToken = await getCsrfToken(page);
-  const code = codes.unique('FABD-WVI');
-  const res = await page.request.post(`${env.API_URL}/fabric-designs`, {
-    headers: { 'X-CSRF-Token': csrfToken },
-    data: { code, name: `E2E ${code}`, weftQualityId, expectedGlm: 250 },
-  });
-  if (res.status() !== 201) throw new Error(`fabric design create failed: ${await res.text()}`);
-  const design = await db.queryOne<{ id: string }>(`SELECT id FROM fabric_designs WHERE code = $1`, [
-    code,
-  ]);
-  if (!design) throw new Error('the fabric design create must register a fabric_designs row');
-  return { id: design.id, code };
-}
-
-// Cancel affordances (weaving-in receipt AND weaving dispatch) share the
-// AlertDialog-with-matching-accessible-names shape documented in
-// weaving-dispatch.spec.ts's cancelDispatch — the trigger and the dialog's
-// own confirm button both read e.g. "Cancel receipt", so the confirm click
-// must be scoped to the dialog to avoid a Playwright strict-mode ambiguity.
-// Returns the mutation's response so callers can assert success OR failure
-// (the dispatch-cancel-blocked case at the bottom of this file needs the
-// latter).
-async function clickConfirmAndWait(
-  page: Page,
-  triggerLabel: string,
-  responseUrlPattern: RegExp,
-): Promise<import('@playwright/test').Response> {
-  await clickButton(page, triggerLabel);
-  const dialog = page.getByRole('alertdialog');
-  await expect(dialog).toBeVisible();
-  const [res] = await Promise.all([
-    page.waitForResponse(
-      (r) => r.request().method() === 'POST' && responseUrlPattern.test(new URL(r.url()).pathname),
-    ),
-    dialog.getByRole('button', { name: triggerLabel }).click(),
-  ]);
-  return res;
-}
+import { confirmDialogAndWait } from '../../support/api';
+import { createFabricDesign, createReceivedBeam } from '../../support/weaving-in-fixtures';
+import type { LedgerKey } from '../../fixtures/db';
 
 test(
   'weaving-in receives fabric against multiple beams with weft reconciliation, cancel fully reverses, and receipt history blocks dispatch cancel',
@@ -322,7 +242,7 @@ test(
     // CANCEL receipt 1 — full reversal: weft position and beam remaining
     // meters both return exactly to their pre-receipt values.
     await gotoAndExpect(page, `/weaving-ins/${receiptId}`);
-    const cancelRes = await clickConfirmAndWait(page, 'Cancel receipt', /\/weaving-ins\/[^/]+\/cancel$/);
+    const cancelRes = await confirmDialogAndWait(page, 'Cancel receipt', /\/weaving-ins\/[^/]+\/cancel$/);
     expect(cancelRes.status()).toBe(200);
     await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
 
@@ -378,7 +298,7 @@ test(
     // "don't pin an unfixed string" rule this suite already applies to
     // minted doc numbers).
     await gotoAndExpect(page, `/weaving-dispatches/${dispatchId}`);
-    const blockedRes = await clickConfirmAndWait(page, 'Cancel dispatch', /\/weaving-dispatches\/[^/]+\/cancel$/);
+    const blockedRes = await confirmDialogAndWait(page, 'Cancel dispatch', /\/weaving-dispatches\/[^/]+\/cancel$/);
     expect(
       blockedRes.status(),
       'the WI-L14 guard must reject this cancel once a non-cancelled weaving-in receipt / taka link exists',
