@@ -63,6 +63,11 @@ const ROUTES: readonly GuardedRoute[] = [
     heading: 'New Fabric Design',
     allowedRoles: ['owner', 'storekeeper'],
   },
+  {
+    path: '/fabric-takas',
+    heading: 'Fabric Takas',
+    allowedRoles: ['owner', 'storekeeper', 'accountant'],
+  },
 ];
 
 function escapeRegExp(value: string): string {

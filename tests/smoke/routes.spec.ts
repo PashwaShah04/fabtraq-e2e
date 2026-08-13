@@ -33,6 +33,7 @@ const ROUTES = [
   '/weaving-dispatches',
   '/fabric-designs',
   '/weaving-ins',
+  '/fabric-takas',
 ] as const;
 
 for (const route of ROUTES) {
