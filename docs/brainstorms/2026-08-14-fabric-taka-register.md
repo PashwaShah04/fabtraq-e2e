@@ -56,6 +56,47 @@ currently reports as unplaced.
   status filter can surface them explicitly. Placing a taka under a cancelled receipt is refused —
   a receipt that did not happen has no fabric to put on a rack.
 
+## Decisions added after the design debate (2026-08-14)
+
+Three agents reviewed the v1 spec — an adversarial critic verifying every claim against shipped
+code, a domain reviewer judging it against real Bhiwandi godown practice, and a simplification
+advocate hunting for reinvention. They produced these:
+
+- **FTR-L9 — Location is captured on the weaving-in receipt header, not only in the register.**
+  The receipt form gains an optional location/floor that defaults every taka row on save; the
+  register becomes the *correction and move* surface. **Why:** the v1 workflow was "unload the
+  tempo, type a 13-row challan, save, navigate to another page, find those same rows, tick 13
+  boxes, re-enter a location you knew while the rolls were being put down." The storekeeper does
+  that for a week and then stops, and the register reports Unplaced forever — rebuilding the exact
+  problem it exists to solve. Per-row override is deliberately NOT added; the register handles the
+  rare split.
+- **FTR-L10 — The create path gets the same location guard as the placement endpoint.**
+  `POST /weaving-ins` already accepts and persists `locationId`/`floorId` with zero validation, so
+  an inactive location, a mismatched floor, or a floor with no location all store today. One shared
+  helper serves both paths — the B-016 standing rule (guards belong on create AND edit).
+- **FTR-L11 — The roll's identifier is `FRC-<challan> / <weaver serial>`, not `TK-<FY>/<n>`.** The
+  minted serial collides: the sequence restarts per weaver per financial year and the display format
+  carries no weaver, so two weavers both produce `TK-2026-27/1`. A colliding string in an identifier
+  slot is worse than no label. The challan+serial pair is provably unique and is what the mill
+  actually says on the phone — *"149 ka 396"*. Falls back to `FRC-… / #<takaNo>` where the weaver
+  gave no serial (currently every taka in the database). Chosen over renumbering, which would
+  reopen WI-L10 and break continuity with numbers already written down.
+- **FTR-L12 — Cancelling a receipt clears its taka's placement.** FTR-L8 refuses placement under a
+  cancelled receipt; without this, cancel-after-place produces exactly that state. A guard that
+  holds in only one temporal order is not a guard.
+- **FTR-L13 — Both challan numbers are search keys, and `weavingInId` is a filter.** The operator's
+  daily handle is the lot, and the lot is the challan. A register that cannot answer "show me
+  everything on 149" does not match how the goods are stacked.
+- **FTR-L14 — The weaver filter is load-bearing, not optional.** Since `takaNo` is unique only per
+  (FY, weaver), a numeric search returns up to one row per weaver. The weaver filter is the
+  disambiguation mechanism and sits next to the search box.
+
+**Rejected from the debate:** adding a weaver code to the minted serial (changes shipped display
+for a bigger win than this feature needs); a global per-FY renumber (migration + breaks written-down
+numbers); `logMany` on `IAuditRepository` (shared-interface surface for one speculative caller);
+row selection inside `DataTable` (~15 pages of regression surface — selection state stays in the
+register page).
+
 ## Consequences worth stating
 
 **No Prisma migration.** `FabricTaka.locationId`/`floorId` and the `FabricDesign` master already
