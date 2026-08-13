@@ -177,14 +177,11 @@ test(
     await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
 
-    await clickButton(page, 'Save dispatch');
-    await expectToast(page, /^Saved /);
-    await expect(page).toHaveURL(/\/weaving-dispatches\/[^/]+$/);
-    const dispatchId = page.url().split('/').pop() as string;
-
     // At-JW weft position key — jobWorkerId set, floor/location NULL
     // (applyChallanInBeamLedger convention, same shape weaving-dispatch.spec
-    // .ts's atJwKey uses).
+    // .ts's atJwKey uses). Baseline captured BEFORE the dispatch: this suite
+    // asserts ledger DELTAS, never absolutes (e2e/README.md:77), so repeat
+    // runs against an unreseeded DB stay green.
     const atJwKey: LedgerKey = {
       qualityId: src!.quality_id,
       skuId: src!.sku_id,
@@ -193,8 +190,15 @@ test(
       floorId: null,
       locationId: null,
     };
+    const atJwBefore = await db.ledgerBalance(atJwKey);
+
+    await clickButton(page, 'Save dispatch');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/weaving-dispatches\/[^/]+$/);
+    const dispatchId = page.url().split('/').pop() as string;
+
     const atJwAfterDispatch = await db.ledgerBalance(atJwKey);
-    expect(atJwAfterDispatch).toBeCloseTo(Q_WEFT, 3);
+    expect(atJwAfterDispatch - atJwBefore).toBeCloseTo(Q_WEFT, 3);
 
     // RECEIVE — 2 taka fully on beam1, 1 taka split across beam1+beam2.
     // Math (warp rate 0.15kg/m both beams, taka weightKg = meters * 0.25 —
@@ -211,6 +215,10 @@ test(
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
     await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();
 
+    // Flipped true before the RE-RECEIVE phase below, which selects one beam
+    // only — the header beam count decides whether the per-taka attribution
+    // popover renders at all.
+    let singleHeaderBeam = false;
     const fillTaka = async (
       n: number,
       opts: { meters: number; weightKg: number; attribution: Array<{ beamNumber: string; meters: number }> },
@@ -219,15 +227,28 @@ test(
       await selectByAriaLabel(page, `fabric design, takas.${n}`, fabricDesign.code);
       await fillByLabel(page, `meters, takas.${n}`, String(opts.meters));
       await fillByLabel(page, `weight, takas.${n}`, String(opts.weightKg));
-      await clickButton(page, `Set beam allocation, takas.${n}`);
-      for (const alloc of opts.attribution) {
-        await fillByLabel(
-          page,
-          `attributed meters for beam ${alloc.beamNumber}, takas.${n}`,
-          String(alloc.meters),
-        );
+      if (opts.attribution.length === 1 && singleHeaderBeam) {
+        // Single selected header beam: BeamOverridePopover renders a static
+        // beam-number label instead of the "Split across beams" trigger
+        // (BeamOverridePopover.tsx:29-34), and `effectiveBeamLinks`
+        // attributes the taka's full meters to it implicitly
+        // (map-form-to-input.ts:79-82). Assert that label rather than
+        // driving a popover the UI deliberately does not render.
+        const takaRow = page
+          .locator('tr')
+          .filter({ has: page.locator(`[data-cell="glm"][data-row="${n}"]`) });
+        await expect(takaRow).toContainText(opts.attribution[0]!.beamNumber);
+      } else {
+        await clickButton(page, `Set beam allocation, takas.${n}`);
+        for (const alloc of opts.attribution) {
+          await fillByLabel(
+            page,
+            `attributed meters for beam ${alloc.beamNumber}, takas.${n}`,
+            String(alloc.meters),
+          );
+        }
+        await clickButton(page, `Done, takas.${n}`);
       }
-      await clickButton(page, `Done, takas.${n}`);
       // GLM computed cell — beam-receipt grid precedent's data-cell/data-row
       // attrs (BeamItemsGrid.tsx), read-only, always 250 for this test's
       // deliberately-exact weightKg/meters ratio.
@@ -255,11 +276,25 @@ test(
     const frcNo = await captureDocNo(page.getByRole('main'), /\bFRC-\d{4}-\d{2}-\d{3,}\b/);
     expect(frcNo).toMatch(/^FRC-\d{4}-\d{2}-\d{3,}$/);
 
+    // PRINT BLOCK — the sheet that has to match job-work-weaving-in.jpeg.
+    // It carries Tailwind `hidden` and only lifts under `@media print`, so a
+    // screen-media assertion would pass vacuously. The page's own
+    // `header { display: none !important }` print rule once outranked the
+    // reveal and shipped a challan with no title/challan-no/weaver; this
+    // asserts that regression stays fixed.
+    await page.emulateMedia({ media: 'print' });
+    const printArea = page.locator('.print-area');
+    await expect(printArea.getByRole('heading', { name: 'Grey Fabric Receipt' })).toBeVisible();
+    await expect(printArea).toContainText(frcNo);
+    await expect(printArea).toContainText(jobWorker!.name);
+    await expect(printArea).toContainText('Receiver signature');
+    await page.emulateMedia({ media: 'screen' });
+
     // ASSERT — weft stillAtJw delta (BE-computed derivedWeftKg drained the
     // at-JW position by exactly 9.0kg, leaving 6.0kg).
     const atJwAfterReceipt = await db.ledgerBalance(atJwKey);
     expect(atJwAfterReceipt - atJwAfterDispatch).toBeCloseTo(-9, 3);
-    expect(atJwAfterReceipt).toBeCloseTo(Q_WEFT - 9, 3);
+    expect(atJwAfterReceipt - atJwBefore).toBeCloseTo(Q_WEFT - 9, 3);
 
     // ASSERT — beam remaining meters in the UI (beam-detail's "Remaining
     // Meters" Field: beamTotalMeters - metersWoven over non-cancelled
@@ -303,16 +338,17 @@ test(
     // role is purely to produce a second NON-cancelled receipt +
     // WeavingInTakaBeam link, so the guard checks below (beam close,
     // dispatch-cancel-blocked) have something real to trip on. Beam
-    // allocation is still set explicitly via the same popover as every taka
-    // above — nothing in the spec or locked resolutions promises an implicit
-    // single-beam default, and §3.2 validation #1 (`Σ metersAttributed per
-    // taka = taka.meters`) is enforced against whatever WeavingInTakaBeam
-    // rows actually get written, not against what the picker happens to have
-    // selected. Reusing fillTaka(0, ...) keeps this identical to the
-    // attribution contract already exercised above.
+    // allocation here is IMPLICIT, not driven through the popover: with one
+    // header beam the UI renders a static beam-number label instead of the
+    // split trigger, and `effectiveBeamLinks` attributes the taka's full
+    // meters to that beam on submit. §3.2 validation #1 (`Σ metersAttributed
+    // per taka = taka.meters`) is enforced against the WeavingInTakaBeam rows
+    // actually written, so the beam-remaining assertions below prove the
+    // implicit path really persisted the link.
     await gotoAndExpect(page, '/weaving-ins/new');
     await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
+    singleHeaderBeam = true;
     await fillTaka(0, { meters: 10, weightKg: 2.5, attribution: [{ beamNumber: beam1.beamNumber, meters: 10 }] });
     await fillByLabel(page, 'Entered weft kg', '1');
     await clickButton(page, 'Save receipt');
