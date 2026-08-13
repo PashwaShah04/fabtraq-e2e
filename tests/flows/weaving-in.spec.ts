@@ -1,0 +1,363 @@
+import { test, expect } from '../../fixtures/test';
+import { env } from '../../fixtures/env';
+import { codes } from '../../fixtures/codes';
+import { gotoAndExpect } from '../../support/nav';
+import {
+  fillByLabel,
+  selectByAriaLabel,
+  selectNativeByLabel,
+  clickButton,
+} from '../../support/forms';
+import { expectToast, captureDocNo } from '../../support/assert';
+import { getCsrfToken } from '../../support/api';
+import type { Db, LedgerKey } from '../../fixtures/db';
+import type { Page } from '@playwright/test';
+
+// Beam seed — same shape as weaving-dispatch.spec.ts's createReceivedBeam,
+// extended with setLength: WeavingDispatchBeam.beamTotalMeters "prefilled
+// from setLength at issue" (WI-L6, spec §2 line 87) — setting it here at
+// beam-receipt time means dispatch prefills beamTotalMeters automatically,
+// sidestepping the weaving-in form's inline backfill prompt (that affordance
+// is covered by BE/FE integration tests per spec §5, not required here).
+async function createReceivedBeam(
+  page: Page,
+  db: Db,
+  opts: { netWeight: number; setLength: number },
+): Promise<{ id: string; beamNumber: string }> {
+  const csrfToken = await getCsrfToken(page);
+  const beamNumber = codes.unique('BM-WVI');
+  const res = await page.request.post(`${env.API_URL}/beam-receipts`, {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: {
+      date: new Date().toISOString().slice(0, 10),
+      beamOrigin: 'purchase',
+      items: [{ beamNumber, netWeight: opts.netWeight, setLength: opts.setLength }],
+    },
+  });
+  if (res.status() !== 201) throw new Error(`beam receipt create failed: ${await res.text()}`);
+  const beam = await db.queryOne<{ id: string }>(`SELECT id FROM beams WHERE beam_number = $1`, [
+    beamNumber,
+  ]);
+  if (!beam) throw new Error('the purchase beam receipt must register a beams row');
+  return { id: beam.id, beamNumber };
+}
+
+// FabricDesign seed via direct API (this spec's job is the weaving-in
+// transaction, not re-proving FabricDesign create — that's
+// fabric-designs.spec.ts's job, DRY). expectedGlm=250 matches every taka
+// below exactly (weightKg = meters * 0.25), so no GLM-mismatch flag fires
+// and this test stays a clean happy path.
+async function createFabricDesign(
+  page: Page,
+  db: Db,
+  weftQualityId: string,
+): Promise<{ id: string; code: string }> {
+  const csrfToken = await getCsrfToken(page);
+  const code = codes.unique('FABD-WVI');
+  const res = await page.request.post(`${env.API_URL}/fabric-designs`, {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: { code, name: `E2E ${code}`, weftQualityId, expectedGlm: 250 },
+  });
+  if (res.status() !== 201) throw new Error(`fabric design create failed: ${await res.text()}`);
+  const design = await db.queryOne<{ id: string }>(`SELECT id FROM fabric_designs WHERE code = $1`, [
+    code,
+  ]);
+  if (!design) throw new Error('the fabric design create must register a fabric_designs row');
+  return { id: design.id, code };
+}
+
+// Cancel affordances (weaving-in receipt AND weaving dispatch) share the
+// AlertDialog-with-matching-accessible-names shape documented in
+// weaving-dispatch.spec.ts's cancelDispatch — the trigger and the dialog's
+// own confirm button both read e.g. "Cancel receipt", so the confirm click
+// must be scoped to the dialog to avoid a Playwright strict-mode ambiguity.
+// Returns the mutation's response so callers can assert success OR failure
+// (the dispatch-cancel-blocked case at the bottom of this file needs the
+// latter).
+async function clickConfirmAndWait(
+  page: Page,
+  triggerLabel: string,
+  responseUrlPattern: RegExp,
+): Promise<import('@playwright/test').Response> {
+  await clickButton(page, triggerLabel);
+  const dialog = page.getByRole('alertdialog');
+  await expect(dialog).toBeVisible();
+  const [res] = await Promise.all([
+    page.waitForResponse(
+      (r) => r.request().method() === 'POST' && responseUrlPattern.test(new URL(r.url()).pathname),
+    ),
+    dialog.getByRole('button', { name: triggerLabel }).click(),
+  ]);
+  return res;
+}
+
+test(
+  'weaving-in receives fabric against multiple beams with weft reconciliation, cancel fully reverses, and receipt history blocks dispatch cancel',
+  async ({ page, db }) => {
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide an active job worker').not.toBeNull();
+
+    // Weft source — same derivation as weaving-dispatch.spec.ts's src query
+    // (any non-beam-track floor lot, active masters, enough balance). Q_WEFT
+    // (15) comfortably covers the 9.0kg derivedWeftKg this test's taka/beam
+    // numbers produce (see the comment block above the taka fills below),
+    // leaving a non-zero 6kg stillAtJw remainder — proving partial
+    // consumption, not just full drain.
+    const Q_WEFT = 15;
+    const src = await db.queryOne<{
+      lot_number: string;
+      sku_id: string;
+      quality_id: string;
+      quality_code: string;
+      quality_name: string;
+      sku_name: string;
+      sku_shade_number: string | null;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT s.lot_number, s.sku_id, s.quality_id,
+              q.code AS quality_code, q.name AS quality_name,
+              sku.name AS sku_name, sku.shade_number AS sku_shade_number,
+              l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM stock_ledger s
+       JOIN location_floors f ON f.id = s.floor_id
+       JOIN locations l ON l.id = f.location_id
+       JOIN yarn_qualities q ON q.id = s.quality_id
+       JOIN yarn_skus sku ON sku.id = s.sku_id
+       WHERE s.lot_number IS NOT NULL
+         AND s.sku_id IS NOT NULL
+         AND l.status = 'active' AND f.status = 'active'
+         AND q.status = 'active' AND sku.status = 'active'
+       GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
+                sku.name, sku.shade_number, l.name, f.name, f.id
+       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
+       ORDER BY s.lot_number
+       LIMIT 1`,
+      [Q_WEFT],
+    );
+    expect(src, 'seed must provide a lot with >= Q_WEFT balance on an active floor').not.toBeNull();
+
+    const fabricDesign = await createFabricDesign(page, db, src!.quality_id);
+
+    // Two beams: beam1 100m/15kg warp, beam2 80m/12kg warp (both 0.15kg
+    // warp/meter — an arbitrary but consistent rate so the derived-weft math
+    // below is easy to hand-verify). setLength prefills beamTotalMeters at
+    // dispatch (WI-L6).
+    const beam1 = await createReceivedBeam(page, db, { netWeight: 15, setLength: 100 });
+    const beam2 = await createReceivedBeam(page, db, { netWeight: 12, setLength: 80 });
+
+    // DISPATCH both beams + weft to the weaver, reusing weaving-dispatch
+    // .spec.ts's proven UI-drive (its own selectors, not new contract).
+    await gotoAndExpect(page, '/weaving-dispatches/new');
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await page.getByLabel('Show beams for all weavers').check();
+    await page.getByLabel('Search beams').fill(beam1.beamNumber);
+    await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
+    await page.getByLabel(`Gross weight for beam ${beam1.beamNumber}`).fill('17');
+    await page.getByLabel(`Pipe weight for beam ${beam1.beamNumber}`).fill('2');
+    await page.getByLabel('Search beams').fill(beam2.beamNumber);
+    await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();
+    await page.getByLabel(`Gross weight for beam ${beam2.beamNumber}`).fill('14');
+    await page.getByLabel(`Pipe weight for beam ${beam2.beamNumber}`).fill('2');
+    await fillByLabel(page, 'Beam Value of Goods', '5000');
+
+    await selectByAriaLabel(page, 'Quality for weft line 1', `${src!.quality_code} – ${src!.quality_name}`);
+    const skuOptionLabel =
+      src!.sku_shade_number !== null && src!.sku_shade_number !== ''
+        ? `${src!.sku_name} — ${src!.sku_shade_number}`
+        : src!.sku_name;
+    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await selectByAriaLabel(page, 'Source lot for weft line 1', src!.lot_number);
+    await fillByLabel(page, 'Net weight for weft line 1', String(Q_WEFT));
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select floor and location', `${src!.loc_name} · ${src!.floor_name}`);
+    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabel(page, 'Weft Value of Goods', '3000');
+
+    await clickButton(page, 'Save dispatch');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/weaving-dispatches\/[^/]+$/);
+    const dispatchId = page.url().split('/').pop() as string;
+
+    // At-JW weft position key — jobWorkerId set, floor/location NULL
+    // (applyChallanInBeamLedger convention, same shape weaving-dispatch.spec
+    // .ts's atJwKey uses).
+    const atJwKey: LedgerKey = {
+      qualityId: src!.quality_id,
+      skuId: src!.sku_id,
+      lotNumber: src!.lot_number,
+      jobWorkerId: jobWorker!.id,
+      floorId: null,
+      locationId: null,
+    };
+    const atJwAfterDispatch = await db.ledgerBalance(atJwKey);
+    expect(atJwAfterDispatch).toBeCloseTo(Q_WEFT, 3);
+
+    // RECEIVE — 2 taka fully on beam1, 1 taka split across beam1+beam2.
+    // Math (warp rate 0.15kg/m both beams, taka weightKg = meters * 0.25 —
+    // GLM 250 exactly, matching fabricDesign.expectedGlm, so no red-flag):
+    //   taka1: 30m/7.5kg all on beam1        -> warp 15*(30/100)=4.5
+    //   taka2: 40m/10kg all on beam1         -> warp 15*(40/100)=6.0
+    //   taka3: 20m/5kg, beam1=10m + beam2=10m -> warp 15*(10/100)+12*(10/80)=1.5+1.5=3.0
+    //   Σ weightKg=22.5, Σ warp=13.5 -> derivedWeftKg = 22.5-13.5 = 9.0
+    //   beam1 total attributed = 30+40+10=80 (of 100, remaining 20)
+    //   beam2 total attributed = 10 (of 80, remaining 70)
+    await gotoAndExpect(page, '/weaving-ins/new');
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await fillByLabel(page, 'Paper challan no', '149');
+    await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
+    await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();
+
+    const fillTaka = async (
+      n: number,
+      opts: { meters: number; weightKg: number; attribution: Array<{ beamNumber: string; meters: number }> },
+    ) => {
+      if (n > 0) await clickButton(page, 'Add taka');
+      await selectByAriaLabel(page, `fabric design, takas.${n}`, fabricDesign.code);
+      await fillByLabel(page, `meters, takas.${n}`, String(opts.meters));
+      await fillByLabel(page, `weight, takas.${n}`, String(opts.weightKg));
+      await clickButton(page, `Set beam allocation, takas.${n}`);
+      for (const alloc of opts.attribution) {
+        await fillByLabel(
+          page,
+          `attributed meters for beam ${alloc.beamNumber}, takas.${n}`,
+          String(alloc.meters),
+        );
+      }
+      await clickButton(page, `Done, takas.${n}`);
+      // GLM computed cell — beam-receipt grid precedent's data-cell/data-row
+      // attrs (BeamItemsGrid.tsx), read-only, always 250 for this test's
+      // deliberately-exact weightKg/meters ratio.
+      await expect(page.locator(`[data-cell="glm"][data-row="${n}"]`)).toContainText(/250(\.0+)?/);
+    };
+
+    await fillTaka(0, { meters: 30, weightKg: 7.5, attribution: [{ beamNumber: beam1.beamNumber, meters: 30 }] });
+    await fillTaka(1, { meters: 40, weightKg: 10, attribution: [{ beamNumber: beam1.beamNumber, meters: 40 }] });
+    await fillTaka(2, {
+      meters: 20,
+      weightKg: 5,
+      attribution: [
+        { beamNumber: beam1.beamNumber, meters: 10 },
+        { beamNumber: beam2.beamNumber, meters: 10 },
+      ],
+    });
+
+    await expect(page.locator('[aria-label="derived weft kg"]')).toContainText(/9(\.0+)?/);
+    await fillByLabel(page, 'Entered weft kg', '9');
+
+    await clickButton(page, 'Save receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/weaving-ins\/[^/]+$/);
+    const receiptId = page.url().split('/').pop() as string;
+    const frcNo = await captureDocNo(page.getByRole('main'), /\bFRC-\d{4}-\d{2}-\d{3,}\b/);
+    expect(frcNo).toMatch(/^FRC-\d{4}-\d{2}-\d{3,}$/);
+
+    // ASSERT — weft stillAtJw delta (BE-computed derivedWeftKg drained the
+    // at-JW position by exactly 9.0kg, leaving 6.0kg).
+    const atJwAfterReceipt = await db.ledgerBalance(atJwKey);
+    expect(atJwAfterReceipt - atJwAfterDispatch).toBeCloseTo(-9, 3);
+    expect(atJwAfterReceipt).toBeCloseTo(Q_WEFT - 9, 3);
+
+    // ASSERT — beam remaining meters in the UI (beam-detail's "Remaining
+    // Meters" Field: beamTotalMeters - metersWoven over non-cancelled
+    // receipts, resolution #7). Field renders label+value as sibling <span>s
+    // with no dedicated aria-label (same shape as the existing Set
+    // Length/Net Weight fields) — locate by the label text's parent.
+    // CAUTION (verify live, Task 4): if `Field`'s sibling-span container also
+    // happens to sit next to a "Set Length"/total-meters value that shares a
+    // substring with the expected remaining figure (worst case here: beam1's
+    // total IS 100, same as its own post-cancel remaining), a `toContainText`
+    // match through an over-wide parent locator could pass for the wrong
+    // reason. If the live run shows `.locator('..')` isn't tightly scoped to
+    // just this Field's two spans, replace these four assertions with a DB
+    // oracle instead: `SELECT COALESCE(SUM(metersAttributed),0) FROM
+    // weaving_in_taka_beams wtb JOIN weaving_ins wi ON wi.id = wtb.weaving_in_id
+    // WHERE wtb.beam_id = $1 AND wi.status != 'cancelled'` and assert
+    // `beamTotalMeters - that sum` directly — same "assert the underlying
+    // state, not a wording pattern" rule this suite already applies to
+    // ledger deltas and doc numbers.
+    await gotoAndExpect(page, `/beams/${beam1.id}`);
+    await expect(page.getByText('Remaining Meters', { exact: true }).locator('..')).toContainText('20');
+    await gotoAndExpect(page, `/beams/${beam2.id}`);
+    await expect(page.getByText('Remaining Meters', { exact: true }).locator('..')).toContainText('70');
+
+    // CANCEL receipt 1 — full reversal: weft position and beam remaining
+    // meters both return exactly to their pre-receipt values.
+    await gotoAndExpect(page, `/weaving-ins/${receiptId}`);
+    const cancelRes = await clickConfirmAndWait(page, 'Cancel receipt', /\/weaving-ins\/[^/]+\/cancel$/);
+    expect(cancelRes.status()).toBe(200);
+    await expect(page.getByText('Cancelled', { exact: true })).toBeVisible();
+
+    const atJwAfterCancel = await db.ledgerBalance(atJwKey);
+    expect(atJwAfterCancel).toBeCloseTo(atJwAfterDispatch, 3);
+
+    await gotoAndExpect(page, `/beams/${beam1.id}`);
+    await expect(page.getByText('Remaining Meters', { exact: true }).locator('..')).toContainText('100');
+    await gotoAndExpect(page, `/beams/${beam2.id}`);
+    await expect(page.getByText('Remaining Meters', { exact: true }).locator('..')).toContainText('80');
+
+    // RE-RECEIVE — a second, independent weaving-in against beam1 only. Its
+    // role is purely to produce a second NON-cancelled receipt +
+    // WeavingInTakaBeam link, so the guard checks below (beam close,
+    // dispatch-cancel-blocked) have something real to trip on. Beam
+    // allocation is still set explicitly via the same popover as every taka
+    // above — nothing in the spec or locked resolutions promises an implicit
+    // single-beam default, and §3.2 validation #1 (`Σ metersAttributed per
+    // taka = taka.meters`) is enforced against whatever WeavingInTakaBeam
+    // rows actually get written, not against what the picker happens to have
+    // selected. Reusing fillTaka(0, ...) keeps this identical to the
+    // attribution contract already exercised above.
+    await gotoAndExpect(page, '/weaving-ins/new');
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
+    await fillTaka(0, { meters: 10, weightKg: 2.5, attribution: [{ beamNumber: beam1.beamNumber, meters: 10 }] });
+    await fillByLabel(page, 'Entered weft kg', '1');
+    await clickButton(page, 'Save receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/weaving-ins\/[^/]+$/);
+
+    // CLOSE beam1 — issued_to_weaver -> fabric_received (spec §3.4). No
+    // confirm dialog: a forward, non-reversing transition, unlike Cancel.
+    await gotoAndExpect(page, `/beams/${beam1.id}`);
+    await clickButton(page, 'Close beam');
+    await expectToast(page, /closed|Fabric Received/i);
+    await expect(page.getByText('Fabric Received', { exact: true })).toBeVisible();
+
+    const beam1AfterClose = await db.queryOne<{ status: string }>(
+      `SELECT status FROM beams WHERE id = $1`,
+      [beam1.id],
+    );
+    expect(beam1AfterClose!.status).toBe('fabric_received');
+
+    // DISPATCH CANCEL NOW BLOCKED — WI-L14: countActiveReceipts' third UNION
+    // branch (weaving_ins/weaving_in_weft_sources) refuses once a
+    // non-cancelled receipt exists against the dispatch's weft challan-out
+    // item, and/or WeavingDispatch.cancel independently rejects once any
+    // linked beam has taka links at all (beam1 does, from both receipts).
+    // Asserted by response status + DB invariance, not by the BE's exact
+    // rejection wording (not fixed by the spec/locked-resolutions — same
+    // "don't pin an unfixed string" rule this suite already applies to
+    // minted doc numbers).
+    await gotoAndExpect(page, `/weaving-dispatches/${dispatchId}`);
+    const blockedRes = await clickConfirmAndWait(page, 'Cancel dispatch', /\/weaving-dispatches\/[^/]+\/cancel$/);
+    expect(
+      blockedRes.status(),
+      'the WI-L14 guard must reject this cancel once a non-cancelled weaving-in receipt / taka link exists',
+    ).toBeGreaterThanOrEqual(400);
+
+    const dispatchAfterBlockedCancel = await db.queryOne<{ status: string }>(
+      `SELECT status FROM weaving_dispatches WHERE id = $1`,
+      [dispatchId],
+    );
+    expect(dispatchAfterBlockedCancel!.status).not.toBe('cancelled');
+
+    const beam1AfterBlockedCancel = await db.queryOne<{ status: string }>(
+      `SELECT status FROM beams WHERE id = $1`,
+      [beam1.id],
+    );
+    expect(beam1AfterBlockedCancel!.status).toBe('fabric_received');
+  },
+);
