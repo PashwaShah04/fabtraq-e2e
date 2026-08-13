@@ -14,8 +14,8 @@ where each one is. Closes the gap where fabric stock was visible only in aggrega
 find a specific roll.
 
 **[v2] Location is captured at receipt, not only in the register.** The weaving-in form gains a
-header location/floor that defaults every taka row on save; the register is the *correction and
-move* surface. Without this the register ships permanently reading "Unplaced" — nobody re-enters a
+header location/floor that defaults every taka row on save; the register is the _correction and
+move_ surface. Without this the register ships permanently reading "Unplaced" — nobody re-enters a
 location on a second screen for rolls they have already put on a rack.
 
 Surfaces: a paginated register, a taka detail page, a bulk place/move action, and one new field on
@@ -25,18 +25,18 @@ the existing receipt form. **No Prisma migration.**
 
 **No migration.** Every column already exists:
 
-| Model | Field | Status today | Used how |
-|-------|-------|--------------|----------|
-| `FabricTaka` | `locationId`, `floorId` | exist, nullable, **accepted and persisted by `POST /weaving-ins` but never validated, and never populated by any client** | placement target |
-| `FabricTaka` | `takaNo`, `paperSerialNo` | written at receipt | search keys |
-| `FabricTaka` | `meters`, `weightKg`, `loomNo`, `cutNotation` | written at receipt | register columns |
-| `WeavingIn` | `date` | written at receipt | days-in-stock (**not** `FabricTaka.createdAt`, which is data-entry time; ageing starts when the fabric arrived) |
-| `WeavingInTakaBeam` | `beamId`, `metersAttributed` | written at receipt | beam provenance |
-| `AuditLog` | — | shared table | placement history |
+| Model               | Field                                         | Status today                                                                                                              | Used how                                                                                                        |
+| ------------------- | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `FabricTaka`        | `locationId`, `floorId`                       | exist, nullable, **accepted and persisted by `POST /weaving-ins` but never validated, and never populated by any client** | placement target                                                                                                |
+| `FabricTaka`        | `takaNo`, `paperSerialNo`                     | written at receipt                                                                                                        | search keys                                                                                                     |
+| `FabricTaka`        | `meters`, `weightKg`, `loomNo`, `cutNotation` | written at receipt                                                                                                        | register columns                                                                                                |
+| `WeavingIn`         | `date`                                        | written at receipt                                                                                                        | days-in-stock (**not** `FabricTaka.createdAt`, which is data-entry time; ageing starts when the fabric arrived) |
+| `WeavingInTakaBeam` | `beamId`, `metersAttributed`                  | written at receipt                                                                                                        | beam provenance                                                                                                 |
+| `AuditLog`          | —                                             | shared table                                                                                                              | placement history                                                                                               |
 
 **[v2] Correction — the create path is live and unguarded.** The original spec claimed these
 columns were "never written". They are: `createFabricTakaSchema` accepts `locationId` and `floorId`
-as *independent* optionals (`fabtraq-shared/src/schemas/transaction/weaving-in.ts:54-55`), the
+as _independent_ optionals (`fabtraq-shared/src/schemas/transaction/weaving-in.ts:54-55`), the
 service passes them through (`weaving-in.service.ts:338-339`) and the repository persists them
 (`prisma-weaving-in.repository.ts:123-124`). No superRefine relates them and `createTx` performs no
 location validation at all — contrast its weaver-active (`:176-182`) and design-active (`:184-197`)
@@ -80,11 +80,11 @@ neither**. A floor without a location is rejected at the wire boundary.
 `LocationFloor` exists, its `locationId` matches, and both `Location.status` and
 `LocationFloor.status` are `active`. Reject the whole receipt otherwise (422). This is the same
 check §3.4 applies, so it lives in one shared private helper used by both paths — the standing
-B-016 rule: guards belong on the create path *and* the edit path.
+B-016 rule: guards belong on the create path _and_ the edit path.
 
 **FE:** the weaving-in form header gains a `LocationFloorSelect`. It is **optional** — a receipt
 can still be entered without knowing the rack — and whatever is chosen is applied to every taka row
-in the submitted payload. Per-row override is explicitly *not* added; the register handles the rare
+in the submitted payload. Per-row override is explicitly _not_ added; the register handles the rare
 case of one roll going elsewhere.
 
 ### 3.1 List (`GET /fabric-takas`)
@@ -92,14 +92,14 @@ case of one roll going elsewhere.
 Paginated. Filters, optional, **AND**-combined (the `search` OR-group nests inside the AND — the
 likeliest implementation bug is hoisting it to the top level and OR-ing the filters away):
 
-| Filter | Behaviour |
-|--------|-----------|
-| `search` | §3.2 |
-| `fabricDesignId` | Exact |
-| `jobWorkerId` | Parent receipt's weaver. **[v2] Load-bearing** — see §3.2 |
-| `weavingInId` | **[v2]** Exact. Lets the receipt page link "these 13 taka" |
-| `placement` | `placed` → `locationId NOT NULL`; `unplaced` → IS NULL |
-| `status` | `received` \| `cancelled` \| **[v2]** `all`. Omitted ⇒ `received` |
+| Filter           | Behaviour                                                         |
+| ---------------- | ----------------------------------------------------------------- |
+| `search`         | §3.2                                                              |
+| `fabricDesignId` | Exact                                                             |
+| `jobWorkerId`    | Parent receipt's weaver. **[v2] Load-bearing** — see §3.2         |
+| `weavingInId`    | **[v2]** Exact. Lets the receipt page link "these 13 taka"        |
+| `placement`      | `placed` → `locationId NOT NULL`; `unplaced` → IS NULL            |
+| `status`         | `received` \| `cancelled` \| **[v2]** `all`. Omitted ⇒ `received` |
 
 **[v2] Ordering:** `weavingIn.date` desc, `takaNo` desc, **`id` asc**. The final tiebreak is
 required for correctness, not neatness: `takaNo` is per-weaver-per-FY, and `weavingIn.date` is a
@@ -114,23 +114,29 @@ a to-many join and is only rendered on detail; omitting it avoids hydrating it f
 
 **[v2] Reframed.** The original called serial-parsing "the one non-obvious piece", implying it
 approximates an exact match. There is no exact match to approximate: `takaNo` is unique only per
-(FY, weaver), so `TK-2026-27/390` identifies up to one taka *per weaver*. Extracting the integer is
+(FY, weaver), so `TK-2026-27/390` identifies up to one taka _per weaver_. Extracting the integer is
 exactly as precise as the serial itself. The parse **is** the design.
 
 ```ts
 const n = Number(/(\d+)\s*$/.exec(search)?.[1]);
-where.AND.push({ OR: [
-  { fabricDesign: { code:  { contains: search, mode: 'insensitive' } } },
-  { fabricDesign: { name:  { contains: search, mode: 'insensitive' } } },
-  { paperSerialNo:         { contains: search, mode: 'insensitive' } },
-  { weavingIn: { challanNo:      { contains: search, mode: 'insensitive' } } },
-  { weavingIn: { paperChallanNo: { contains: search, mode: 'insensitive' } } },
-  ...(Number.isInteger(n) && n <= 2147483647 ? [{ takaNo: { equals: n } }] : []),
-]});
+where.AND.push({
+  OR: [
+    { fabricDesign: { code: { contains: search, mode: "insensitive" } } },
+    { fabricDesign: { name: { contains: search, mode: "insensitive" } } },
+    { paperSerialNo: { contains: search, mode: "insensitive" } },
+    { weavingIn: { challanNo: { contains: search, mode: "insensitive" } } },
+    {
+      weavingIn: { paperChallanNo: { contains: search, mode: "insensitive" } },
+    },
+    ...(Number.isInteger(n) && n <= 2147483647
+      ? [{ takaNo: { equals: n } }]
+      : []),
+  ],
+});
 ```
 
 **[v2] Both challan numbers are search keys.** The mill's daily handle is the lot, and the lot is
-the challan — *"Vinayaka ka 149 ka maal"*. A register that cannot answer "show me everything on 149"
+the challan — _"Vinayaka ka 149 ka maal"_. A register that cannot answer "show me everything on 149"
 does not match how the goods are stacked.
 
 The `2147483647` bound is **not** optional: `takaNo` is Postgres `int4`, and an overflowing number
@@ -263,7 +269,7 @@ Start the e2e chain from the existing multi-taka fixture in `tests/flows/weaving
   inherited shape is already covered. Plus the both-or-neither location/floor refinement (§3.0).
 - **BE unit** — search-parse table (bare number, `TK-…/n`, non-numeric, empty, int4 overflow);
   placement validation branches; the shared location/floor helper.
-- **BE integration** — **[v2]** filters AND search *combined* (catches the hoisted-OR bug);
+- **BE integration** — **[v2]** filters AND search _combined_ (catches the hoisted-OR bug);
   **[v2]** page 1 ∪ page 2 contains no duplicate ids over a tie-heavy fixture (catches the ordering
   bug); **[v2]** two weavers both holding taka #390; default cancelled-exclusion; placement happy
   path and each rejection; re-placement writing a second audit row; **[v2]** the step-4 count

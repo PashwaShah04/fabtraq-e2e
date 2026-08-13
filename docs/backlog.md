@@ -77,6 +77,7 @@ The void-and-reenter MVP from Sprint 2 works for inward-only stock but is
 annoying for typo fixes on long item lists.
 
 **Proposal:**
+
 - New endpoint `PATCH /yarn-purchases/:id/items` body `{ items: [...] }` —
   `id?` per item: present = edit, absent = add, items missing from list = remove
 - Per-item delete writes a reversal row in `stock_ledger` via Inventory
@@ -100,7 +101,7 @@ strictly better than pre-S5 timing for this work.
 
 **Origin:** 2026-06-08 session (chat: "Clarify job work quality visibility
 after jw-challan-out", session `f1ddbbe7-c679-4562-8162-bcc474625247`). The
-S5 P0 ledger/`/jw-challans-in/beam` bug exposed a whole *class* of bug; this is
+S5 P0 ledger/`/jw-challans-in/beam` bug exposed a whole _class_ of bug; this is
 the agreed permanent fix. Discussion was cut off by a socket error before being
 written down — this entry is the durable capture.
 **Status:** **PRIORITY-BUMPED (2026-06-12).** Promoted ahead of other S6-adjacent
@@ -128,6 +129,7 @@ session — S5 PRs stay open for separate review). Branch:
 `feat/b004-endpoint-registry-<repo>`.
 
 **P1 SHIPPED (2026-06-12 — final review READY; PUSHED + shared@1.1.0 PUBLISHED 2026-06-16):**
+
 - shared `feat/b004-endpoint-registry-shared` @ `59d649c`: full endpoint
   registry — 45 live endpoints (verified 45/45 against the contract-coverage
   manifest, 0 mismatches; 2 dead endpoints tombstoned in source), `EndpointDef`
@@ -144,6 +146,7 @@ session — S5 PRs stay open for separate review). Branch:
   `fabtraq-shared/docs/superpowers/plans/2026-06-12-b004-p1-*.md`.
 
 **Carry-forwards discovered during P1 (for P2/P3/P4 pickup):**
+
 1. **P2:** `GET /beams/:id` has NO param validation on the live wire today; the
    registry binds a uuid schema, so wiring `registerEndpoint()` tightens
    behavior (non-uuid id: 404 → 400). Intentional, but verify FE handles it.
@@ -164,15 +167,16 @@ open S5 PR branches) are now on origin; `@pashwashah04/fabtraq-shared@1.1.0` is
 published to GitHub Packages so the branches' CI can resolve the registry. PRs
 not yet opened.
 be `feat/b004-endpoint-registry-be` @ `7ba5924` (4 commits on top of P1):
+
 - `src/shared/http/register-endpoint.ts` — `registerEndpoint(router, def, handler, deps)`
-  + `TypedRequest<Def>` + `RegisterDeps`. Composes requireAuth (when
-  `def.auth !== false`) → requireRole(...roles) (fail-fast on unknown role) →
-  doubleCsrfProtection (mutating methods) → validate(from def schemas) →
-  asyncHandler. Mount-prefix stripping folded in (`RegisterDeps.mountPrefix`,
-  **segment-boundary guarded** so `/jw-challans-in-beam` can't false-match
-  `/jw-challans-in`); absolute `def.path` still drives all typing → **zero cast
-  in module code**. Exactly 2 documented casts confined to the adapter
-  (Express 5 query-slot, shared/BE role decoupling). 9 unit tests.
+  - `TypedRequest<Def>` + `RegisterDeps`. Composes requireAuth (when
+    `def.auth !== false`) → requireRole(...roles) (fail-fast on unknown role) →
+    doubleCsrfProtection (mutating methods) → validate(from def schemas) →
+    asyncHandler. Mount-prefix stripping folded in (`RegisterDeps.mountPrefix`,
+    **segment-boundary guarded** so `/jw-challans-in-beam` can't false-match
+    `/jw-challans-in`); absolute `def.path` still drives all typing → **zero cast
+    in module code**. Exactly 2 documented casts confined to the adapter
+    (Express 5 query-slot, shared/BE role decoupling). 9 unit tests.
 - Vendor module migrated as the **reference P5 template** + first P5 increment:
   `vendor.routes.ts` (cast-free, 4 `registerEndpoint` calls), `vendor.controller.ts`
   (raw `TypedRequest` handlers, validation from the def, 2 documented body casts),
@@ -185,19 +189,20 @@ be `feat/b004-endpoint-registry-be` @ `7ba5924` (4 commits on top of P1):
 
 **P5 migration guidance (from P2 quality review — apply when migrating the 10
 remaining modules; the vendor module is the canonical template to copy):**
+
 1. **`MOUNT_PREFIX` is the highest-risk copy-paste site.** A mismatch with the
    module's `app.use('/x', ...)` mount in `app.ts` throws at startup (fail-fast),
    but only surfaces if an integration test boots the router. Per-migration
    checklist line: verify `MOUNT_PREFIX` against the exact `app.ts` `app.use` line.
-2. **Body-cast canonical rule:** `TypedRequest` body is the zod *input* shape;
-   after `validate()` runs, `req.body` is the *output* shape. Cast
+2. **Body-cast canonical rule:** `TypedRequest` body is the zod _input_ shape;
+   after `validate()` runs, `req.body` is the _output_ shape. Cast
    `req.body as XInput` where `XInput = z.infer<typeof xSchema>` (output). Do NOT
    cast to the input type.
 3. **List-query canonical form = destructure** the typed `req.query`
    (`const { search, status, page, pageSize } = req.query`) — NOT an intermediate
    `as` cast (that escapes narrowing; it was caught + removed in vendor).
 4. **`deps` boilerplate:** `requireAuth`/`doubleCsrfProtection`/`validRoles:
-   USER_ROLE_VALUES` is identical in every router. Consider a
+USER_ROLE_VALUES` is identical in every router. Consider a
    `buildRegisterDeps(env): Omit<RegisterDeps,'mountPrefix'>` helper before the
    ~10th copy (also the natural place to separate routing-config `mountPrefix`
    from the middleware deps — `RegisterDeps` currently mixes both).
@@ -208,6 +213,7 @@ remaining modules; the vendor module is the canonical template to copy):**
 
 **P3 SHIPPED (2026-06-16 — both reviews Approved; committed, not pushed):**
 be `feat/b004-endpoint-registry-be` @ `5338d56` (7 commits on top of P2):
+
 - `src/shared/openapi/` — emits a deterministic **OpenAPI 3.0.3** doc from the
   registry. `buildOpenApiDocument()` enumerates all **45** EndpointDefs (filters
   the shared barrel for method+path+responseSchema, sorts for determinism),
@@ -228,12 +234,14 @@ be `feat/b004-endpoint-registry-be` @ `5338d56` (7 commits on top of P2):
   (determinism verified). Plan: `fabtraq-be/docs/superpowers/plans/2026-06-16-b004-p3-openapi-emit.md`.
 
 **P3 carry-forwards (for P4/P6):**
+
 1. **P6 drift-gate command is proven:** `npm run openapi:emit && git diff --exit-code docs/openapi.json`. Add it to the BE CI workflow.
 2. **P4 (FE codegen):** `components.schemas` is empty — all schemas inline in each op (openapi-typescript handles fine; check orval verbosity if used). Only success codes (200/201) are emitted; error shapes use shared `AppError`, not generated.
 3. `emit.test.ts` pins operation count == 45 (intentional; failure message says to regenerate openapi.json when an endpoint is added).
 
 **P4 SHIPPED (2026-06-16 — both reviews Approved; committed, not pushed):**
 fe `feat/b004-endpoint-registry-fe` @ `4074d2e` + a shared root-fix.
+
 - `src/shared/api/typed-client.ts` — `typedClient.call(def, args)`: a type-driven
   FE client over the registry (spec §P4 Option A). Derives real arg/return types
   from the EndpointDef schema fields, conditional `params`/`query`/`body` keys per
@@ -281,6 +289,7 @@ emit), (3) CI-time (drift gate + lint guards). **S6 can now start.**
 each de-allowlisted from its lint guard until both `*_ALLOWLIST`s reach empty.
 
 **P5 FE-migration recipe (from P4 — vendors is the cast-free template):**
+
 1. Import the registry endpoint objects (values) + keep `import type` for the DTOs
    (verbatimModuleSyntax).
 2. Replace `client.<verb>(url, …)` + manual `parseOrThrow` with
@@ -310,8 +319,8 @@ route registration on the BE; TypeScript cannot connect the two, so an FE call
 to a non-existent / renamed endpoint compiles fine and only fails at runtime.
 This is exactly how the S5 beam bug slipped past type-checking. The existing
 `docs/specs/2026-05-06-contract-drift-prevention.md` (runtime schema-validate
-on every response + a real-wire smoke CI) catches drift at *test/runtime* — this
-B-004 work moves the guarantee to *compile-time + build-time*.
+on every response + a real-wire smoke CI) catches drift at _test/runtime_ — this
+B-004 work moves the guarantee to _compile-time + build-time_.
 
 ### Architecture — schema-first, codegen-everywhere
 
@@ -349,13 +358,14 @@ URL string), **(2) spec + codegen** (build-time — BE emits OpenAPI via
 
 User: **"I want to have it completely separate. Even if the long-term solution
 is not available to S6, that is fine."** So:
+
 - This is its own workstream with its own kickoff — **not** S6 Week-0 prep, **not**
   run in parallel with S6.
 - The earlier "P1 must lock before S6 features start" sequencing constraint is
   therefore **moot / withdrawn** — S6 proceeds on the current `router.post` +
   hand-rolled `api.ts` pattern; this migration happens later, independently.
 - An ESLint guard to stop new code copying the old pattern is only relevant
-  *once this workstream starts* (to manage the dual-pattern coexistence window).
+  _once this workstream starts_ (to manage the dual-pattern coexistence window).
 
 ---
 
@@ -375,7 +385,7 @@ replaces `JwChallanInBeam`). No longer open.
 Three related items, to be designed together (beam receipts touch all three):
 
 1. **Direct beam entry (Path #2) — NEW Phase-1 feature.** Today beams can only
-   be received from a sizing JW-out (`challanOutId` is *required* in
+   be received from a sizing JW-out (`challanOutId` is _required_ in
    `jw-challan-in-beam.service.ts`). The user wants a second path: **directly
    purchasing finished beams** (no job-work origin). Needs schema (beam receipt
    without `challanOutId`), service, route, FE form, tests. Not in the current
@@ -391,7 +401,7 @@ Three related items, to be designed together (beam receipts touch all three):
 
 3. **`countActiveReceipts` cancellation-awareness** (`prisma-jw-challan-out.repository.ts`).
    It deems an in-challan "active" if it has any `notes IS DISTINCT FROM 'cancellation'`
-   ledger row — but forward rows persist after `reverseLedger` (which only *adds*
+   ledger row — but forward rows persist after `reverseLedger` (which only _adds_
    offsetting rows). So a fully-cancelled in-challan still counts as active and
    blocks its OUT from being cancelled. Affects yarn too; untested today (no test
    covers cancel-IN-then-cancel-OUT). Fix: active = has forward rows AND no
@@ -445,8 +455,8 @@ pushed FE `feat/s6-fe` 5224749..b17e487, BE test `feat/s6-be` e8bce06. The dead
 The yarn JW-In form's source-lot picker (`EligibleOutItemSourcePicker` →
 `useEligibleOutItems` → `jw-challans-in/api.ts getEligibleOutItems`) called
 **`GET /jw-challans-out/items/eligible`**, which **returned 404** — the BE removed
-it in S5 (`jw-challan-out.routes.ts:24`: *"Removed GET /items/eligible … dyed-only
-concept retired in S5 redesign"*). The picker rendered in **both** branches of
+it in S5 (`jw-challan-out.routes.ts:24`: _"Removed GET /items/eligible … dyed-only
+concept retired in S5 redesign"_). The picker rendered in **both** branches of
 `YarnLineRow` (originally dyed → `YarnLineSourceSubTable`, non-dyed →
 `YarnLine1to1SourceRow`; the non-dyed branch was unified into the sub-table on
 2026-06-25 — see UPDATE above), so **every** yarn JW-In receipt's source
@@ -461,6 +471,7 @@ now-dead endpoint. So this is NOT a global/cross-challan picker by design; it's 
 parent-scoped picker that was left unfinished.
 
 **Correct fix (mirror the beam form, which works):**
+
 - FE: thread `challanOutId` from form → `YarnLineSourceSubTable` →
   `EligibleOutItemSourcePicker` → query (beam form already does exactly this with
   `useEligibleOutItemsForBeam`).
@@ -469,10 +480,11 @@ parent-scoped picker that was left unfinished.
   non-sizing out-items), OR generalize the beam endpoint to serve both tracks.
 
 **Two decisions for the owner (tilt this to S6/L3):**
+
 1. Make the Parent Challan **required** (it's labelled "optional" today but sources
    must come from a parent)?
 2. **Cross-challan M:N** — brainstorm L3 wants combining source lots from
-   *different* parent challans into one receipt; that's the only case a *global*
+   _different_ parent challans into one receipt; that's the only case a _global_
    picker fits, and it's **scheduled for S6 (L3 — M:N + partial returns)**. L3 will
    formally settle the source↔parent-challan model, so this picker fix is best done
    **as part of L3** rather than a throwaway interim patch. A minimal parent-scoped
@@ -536,6 +548,7 @@ was sending an ISO datetime); FE `b0511e1` redesigns the yarn-lot UI. **PRs not 
 opened.**
 
 Four sections (all in the design doc):
+
 1. **BE** — new generic `GET /inventory/lots/aggregated` endpoint: one row per
    `lotNumber` with `totalBalance` + nested per-floor `placements[]`. Built with
    a **clean repo(fetch)/service(compute) split** — NOT the current fat-repository
@@ -567,7 +580,7 @@ The §9 integration landed (session `session_014KByE3Ry1JrQLVuSMsvn7y`): shared 
 (zod-v3 port of the parser contract + `parseDesignPdf` registry endpoint, published to
 GitHub Packages, commits `e97b29a..53c95b5` tag `v1.6.0`), BE proxy
 `POST /designs/parse-pdf` (multer preValidation on registerEndpoint, HttpPdfParserClient,
-DesignParseService with boundary re-validation, error mapping with PARSER_* in
+DesignParseService with boundary re-validation, error mapping with PARSER*\* in
 `details.code`, OpenAPI 64-pin; 13 tasks, commits `afd96eb..45cdaaa` on `feat/s6-be` —
 **in the linked worktree `fabtraq-be-wt-b010`**), FE "Import from PDF" on the Design form
 (callUpload w/ fetch adapter + 120s timeout, ImportRecipeDialog with quality/SKU
@@ -579,7 +592,7 @@ scanned PDF → 422 `details.code=AI_NOT_CONFIGURED` passthrough; unauth 403; FE
 smoke 64/64 vs live BE. AI engine still never verified live (needs ANTHROPIC_API_KEY).
 **REMAINING (not code):** (1) push `feat/b010-beam-register-v2` (shared — git source of
 1.5.0+1.6.0 local-only), BE worktree commits, FE commits — on user go; (2) `.env.example`
-PDF_PARSER_* block (permission-gated, 4 lines — see session notes); (3) parser deploy +
+PDF_PARSER*\* block (permission-gated, 4 lines — see session notes); (3) parser deploy +
 nginx `client_max_body_size` bump when prod deploy happens; (4) pre-existing BE branch-cov
 debt 74.5%<75 from the earlier Designs-master commit (`893dcbf`), not this workstream.
 **Lineage:** extends the beams workstream **B-005**; builds on shipped Inventory /
@@ -599,6 +612,7 @@ items now carry `colourwayId`/`colourwayName`. FE/e2e workstreams tracked
 separately (see the shared/FE/e2e sprint docs).
 
 **Scope (locked model, pre-Design-v2 — see supersession note above):**
+
 1. **Designs master (NEW)** — `name/code` + stored **recipe** `[(quality, SKU, %)]`.
    One design → many beams. (BR-L2.)
 2. **Beam attributes** — add `ends` (int), `reed` (int; maybe text "60s" — confirm
@@ -846,7 +860,7 @@ Logged: 2026-08-14, from `docs/superpowers/specs/2026-08-14-fabric-taka-register
 `findActiveTakasForFabricStock` treats every non-cancelled taka as on hand, and no transaction ever
 removes fabric. The day the first lot ships to a processor, the register still shows it on the rack.
 
-Predicted shadow behaviour: a storekeeper creates a Location named "Sent to Processor" and *places*
+Predicted shadow behaviour: a storekeeper creates a Location named "Sent to Processor" and _places_
 rolls there, at which point `locationId` silently encodes two different things and location data
 becomes unrecoverable.
 
@@ -888,7 +902,7 @@ with a ResponseShapeViolation.
 Latent, not currently triggered: `transporter.routes.test.ts` creates its transporter through the
 API rather than this helper, so nothing exercises the bad code today.
 
-Pre-existing — surfaced 2026-08-14 during the fabric-taka-register BE work (which fixed a *separate*
+Pre-existing — surfaced 2026-08-14 during the fabric-taka-register BE work (which fixed a _separate_
 collision bug in the same helper, where `seedJwMasters`'s `code` fields ignored `namePrefix` while
 `name` honoured it). Fix when next touching transporter fixtures; check for tests that assert the
 `TR-` literal before changing it.
