@@ -29,7 +29,8 @@ the existing receipt form. **No Prisma migration.**
 |-------|-------|--------------|----------|
 | `FabricTaka` | `locationId`, `floorId` | exist, nullable, **accepted and persisted by `POST /weaving-ins` but never validated, and never populated by any client** | placement target |
 | `FabricTaka` | `takaNo`, `paperSerialNo` | written at receipt | search keys |
-| `FabricTaka` | `meters`, `weightKg`, `loomNo`, `cutNotation`, `createdAt` | written at receipt | register columns |
+| `FabricTaka` | `meters`, `weightKg`, `loomNo`, `cutNotation` | written at receipt | register columns |
+| `WeavingIn` | `date` | written at receipt | days-in-stock (**not** `FabricTaka.createdAt`, which is data-entry time; ageing starts when the fabric arrived) |
 | `WeavingInTakaBeam` | `beamId`, `metersAttributed` | written at receipt | beam provenance |
 | `AuditLog` | — | shared table | placement history |
 
@@ -206,7 +207,7 @@ multi-filter `PARAM`/`buildQuery`/`setParams` machinery — including its docume
 about two sequential `setSearchParams` calls clobbering each other.
 
 **`/fabric-takas` — register.** Columns: Roll (§4 identifier), Paper No, Design, L.No, Cut, Meters,
-Weight, GLM, **Days in stock** (from `createdAt` — grey yellows, and FIFO is physical), Location,
+Weight, GLM, **Days in stock** (from `date`, the receipt date — NOT `createdAt`: the column measures physical ageing on the rack, which starts when the fabric arrived, not when the row was typed in. Grey yellows, and FIFO is physical), Location,
 Receipt, Weaver, Date.
 
 - **[v2] Search box already exists** — `DataTable`'s own `search`/`onSearchChange` props
