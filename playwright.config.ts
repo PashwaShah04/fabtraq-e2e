@@ -18,6 +18,12 @@ const apiPort = Number(new URL(API_URL).port || '4000');
 // behavior.
 const BE_DIR = process.env.E2E_BE_DIR ?? '../fabtraq-be';
 const FE_DIR = process.env.E2E_FE_DIR ?? '../fabtraq-fe';
+// The design-v2 PDF-import specs proxy through the BE to the standalone
+// fabtraq-pdf-parser service. It was NOT booted here, so a full run failed
+// three specs purely because the service was down — a false red that reads
+// exactly like a product regression. Booted with the rest of the stack now.
+const PARSER_DIR = process.env.E2E_PARSER_DIR ?? '../fabtraq-pdf-parser';
+const PARSER_PORT = Number(process.env.E2E_PARSER_PORT ?? '7300');
 
 export default defineConfig({
   testDir: './tests',
@@ -80,6 +86,17 @@ export default defineConfig({
       timeout: 120_000,
       reuseExistingServer: false,
       stdout: 'pipe',
+    },
+    {
+      // reuseExistingServer here (unlike BE/FE): this service holds no test
+      // state, so an already-running instance is safe to reuse and saves a
+      // boot on every local run.
+      command: `npm --prefix ${PARSER_DIR} run dev`,
+      url: `http://localhost:${String(PARSER_PORT)}/health`,
+      timeout: 120_000,
+      reuseExistingServer: true,
+      stdout: 'pipe',
+      env: { PORT: String(PARSER_PORT) },
     },
   ],
 });
