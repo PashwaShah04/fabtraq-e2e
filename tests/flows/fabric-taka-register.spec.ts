@@ -14,6 +14,31 @@ import { createFabricDesign, createReceivedBeam } from '../../support/weaving-in
 import type { Db } from '../../fixtures/db';
 import type { Page } from '@playwright/test';
 
+// This spec's OWN job worker (API-driven, same pattern as createReceivedBeam)
+// instead of the shared "first active job worker" weaving-in.spec.ts also
+// picks. Sharing a weaver is a second, subtler contention: cancelling this
+// spec's receipt (FTR-L12) credits weft back to an at-JW position for that
+// weaver that outlives the test (the dispatch itself is never cancelled).
+// weaving-in.spec.ts's own weft receive auto-allocates FIFO across ALL open
+// at-JW positions for its weaver — if that weaver is shared, a leftover
+// position from this spec's cancel can absorb weaving-in.spec.ts's drain
+// instead of the position its own ledger-key assertion is watching.
+async function createJobWorker(page: Page, db: Db): Promise<{ id: string; code: string; name: string }> {
+  const csrfToken = await getCsrfToken(page);
+  const name = codes.unique('E2E FTR Weaver');
+  const res = await page.request.post(`${env.API_URL}/job-workers`, {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: { name, stateCode: '27', jobWorkTypes: ['weaving'] },
+  });
+  if (res.status() !== 201) throw new Error(`job worker create failed: ${await res.text()}`);
+  const row = await db.queryOne<{ id: string; code: string }>(
+    `SELECT id, code FROM job_workers WHERE name = $1`,
+    [name],
+  );
+  if (!row) throw new Error('the job worker create must register a job_workers row');
+  return { id: row.id, code: row.code, name };
+}
+
 // Funds this test's OWN weft lot via a direct API-driven yarn purchase
 // (same "BE-validated request, no bespoke UI drive" pattern as
 // weaving-in-fixtures.ts's createReceivedBeam) instead of drawing balance
@@ -138,10 +163,7 @@ async function readFabricTabCounts(
 test(
   'fabric taka register: receive with a header location, find by paper serial, move floors, detail provenance, cancel clears placement',
   async ({ page, db }) => {
-    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
-      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
-    );
-    expect(jobWorker, 'seed must provide an active job worker').not.toBeNull();
+    const jobWorker = await createJobWorker(page, db);
 
     // Two distinct active (location, floor) pairs — pair[0] is the header
     // location applied at receipt (FTR-L9), pair[1] is where two of the
@@ -204,7 +226,7 @@ test(
     // DISPATCH both beams + weft to the weaver — identical UI-drive to
     // weaving-in.spec.ts (its own selectors, not new contract).
     await gotoAndExpect(page, '/weaving-dispatches/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
     await page.getByLabel('Show beams for all weavers').check();
     await page.getByLabel('Search beams').fill(beam1.beamNumber);
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
@@ -245,7 +267,7 @@ test(
     const s3 = codes.unique('S');
 
     await gotoAndExpect(page, '/weaving-ins/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
     await fillByLabel(page, 'Paper challan no', '149');
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
     await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();
