@@ -324,12 +324,53 @@ invalidated by the Vite dev server being killed mid-run under memory pressure
 (`ERR_CONNECTION_REFUSED`, 14 unrelated failures). Parallelise agents across *repos*; the database
 is exclusive, and "my command returned" is not "the resource is free".
 
+### Adversarial review round (2026-08-14, post-implementation)
+
+Three reviewers (BE / FE / shared+e2e) attacked the shipped code. Gates were already green; the
+review found **three defects no gate could see**, which is the argument for doing it at all.
+
+1. **FE P1 — a half-filled header bricked the receipt form.** `LocationFloorSelect` fires
+   `onFloorChange('')` when the location changes; the mapper tested `!== undefined`, so `''` passed
+   through and every save failed with `Must be a valid UUID`, with no field-level error and no way
+   to un-pick the location. Worse, shared's both-or-neither refinement computes
+   `hasFloor = floorId !== undefined`, so with `''` it never fired — **§3.0's guard was present in
+   the code but dead**. Fixed at the wire chokepoint (`a34b0fd`), with a co-located `<FieldError>`
+   and a test verified to fail against the pre-fix source.
+2. **BE P1 — the feature's only write was untested.** Changing `data: { locationId, floorId }` to
+   `data: {}` left every test green. Fixed with a persistence assertion, mutation-tested red→green
+   (`74ae10c`). The same review found `place()` issuing ~300 queries inside a 5 s transaction to
+   build data it discarded — replaced with one `findMany` (`0721021`), a net deletion.
+3. **shared P1 — an open drift gate.** `fabricTakaRegisterRowSchema.date` was a bare `z.string()`
+   while both siblings in the file use `.datetime()` and the BE emits `toISOString()`. A mock could
+   emit `'2026-08-12'`, pass validation on both sides, and render `NaN` in days-in-stock — the
+   B-005/B-006 failure mode. Tightened with a table-driven test locking it, plus a `.max(200)` cap
+   on the previously unbounded `search` (`224e551`). No version bump: 1.16.0 was not yet published.
+
+Also fixed: a cancel race that could leave a placed taka on a cancelled receipt (`4b9180a`),
+`beamLinks` hydrated on the list contrary to §3.1 and an untrimmed search string (`f9ad592`), cache
+invalidation missing on create/cancel, the absent receipt→register link, and running totals
+disagreeing with the submitted payload (`0367aad`, `2b1e081`, `b96df91`).
+
+Reviewers also **confirmed correct**: e2e delta discipline throughout, fixture ownership genuinely
+closed, repeat-run safety, the helper extraction as behaviour-preserving line by line, the search
+OR nesting inside the AND, the int4 bound, and the `{id:'asc'}` tiebreak.
+
+### Final verified gates (all re-run by the lead after the fixes)
+
+| Repo | Result |
+|------|--------|
+| `fabtraq-shared` | 1148/1148 · lint/typecheck/build clean |
+| `fabtraq-be` | 714 unit + 653 integration · all gates clean |
+| `fabtraq-fe` | 1291/1291 · coverage 93.81 / 87.21 / 86.63 / 93.81 |
+| `e2e` | **122/122**, two of three full runs green (see B-027) |
+
 ### Backlog logged
 
 **B-022** unbounded fabric-stock aggregate read · **B-023** nothing records fabric leaving the
 godown (mitigated by relabelling the Fabric tab count "Received") · **B-024** declared vs derived
 lot totals on the receipt (the paper challan carries both) · **B-025** filter/sort by `cutNotation`
-· **B-026** test helper emits an invalid transporter code prefix (`TR-` vs `TRP`).
+· **B-026** test helper emits an invalid transporter code prefix (`TR-` vs `TRP`) · **B-027** low-rate
+load-sensitive e2e timeout flake.
 
 ### Still outstanding
 
