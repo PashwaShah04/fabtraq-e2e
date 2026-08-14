@@ -908,3 +908,27 @@ collision bug in the same helper, where `seedJwMasters`'s `code` fields ignored 
 `TR-` literal before changing it.
 
 Logged: 2026-08-14.
+
+## B-027 — e2e suite has a low-rate, load-sensitive timeout flake
+
+Across many full `npm run e2e` runs the suite is green, but roughly one run in three fails a single
+spec on a **timeout** — a different spec each time, never an assertion failure:
+
+- `e9-verification` (PDF import) — `Test timeout of 60000ms exceeded`
+- `masters/fabric-designs` — `getByText('Fabric design updated')` not visible within 10 s
+- one run failed 14 specs at once with `ERR_CONNECTION_REFUSED` on :5173 — the Vite dev server was
+  killed mid-run
+
+Every affected spec passes 3/3 when run in isolation. The common factor is machine load: this box
+runs unrelated dev servers alongside the suite and had ~7 GB of 39 GB free during these runs, so
+Vite and the PDF parser are the first things to starve.
+
+Not caused by the fabric-taka-register workstream (its two genuine contention bugs were separately
+found, proven causally, and fixed). Worth addressing because a suite that is red one run in three
+trains people to re-run rather than read the failure — which is exactly how a real regression gets
+waved through.
+
+Likely cheapest fixes: raise the toast/visibility timeouts that are tuned for an idle machine,
+and/or give the pdf-parser webServer a longer readiness timeout.
+
+Logged: 2026-08-14.
