@@ -1,4 +1,5 @@
 import { test, expect } from '../../fixtures/test';
+import { env } from '../../fixtures/env';
 import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel,
@@ -7,10 +8,100 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
-import { confirmDialogAndWait } from '../../support/api';
+import { confirmDialogAndWait, getCsrfToken } from '../../support/api';
 import { codes } from '../../fixtures/codes';
 import { createFabricDesign, createReceivedBeam } from '../../support/weaving-in-fixtures';
+import type { Db } from '../../fixtures/db';
 import type { Page } from '@playwright/test';
+
+// Funds this test's OWN weft lot via a direct API-driven yarn purchase
+// (same "BE-validated request, no bespoke UI drive" pattern as
+// weaving-in-fixtures.ts's createReceivedBeam) instead of drawing balance
+// off whatever shared seed lot jw-out.spec.ts's own query also targets —
+// two specs racing the same seed lot's balance is exactly the kind of
+// cross-spec depletion this suite's "own data" rule (README.md /
+// context-doc) exists to prevent. SKU-bearing (unlike
+// support/sentinel-purchase.ts's SKU-less stock): the weaving-dispatch weft
+// line drives an explicit "Select SKU" field, so the funded lot must carry
+// a real skuId.
+async function fundWeftLot(
+  page: Page,
+  db: Db,
+  opts: { quantity: number; locationId: string; floorId: string },
+): Promise<{
+  lotNumber: string;
+  skuId: string;
+  qualityId: string;
+  qualityCode: string;
+  qualityName: string;
+  skuName: string;
+  skuShadeNumber: string | null;
+}> {
+  const vendor = await db.queryOne<{ id: string }>(
+    `SELECT id FROM vendors WHERE status = 'active' ORDER BY code LIMIT 1`,
+  );
+  expect(vendor, 'seed must provide an active vendor').not.toBeNull();
+
+  const qualitySku = await db.queryOne<{
+    quality_id: string;
+    quality_code: string;
+    quality_name: string;
+    sku_id: string;
+    sku_name: string;
+    sku_shade_number: string | null;
+  }>(
+    `SELECT q.id AS quality_id, q.code AS quality_code, q.name AS quality_name,
+            sku.id AS sku_id, sku.name AS sku_name, sku.shade_number AS sku_shade_number
+     FROM yarn_qualities q
+     JOIN yarn_skus sku ON sku.quality_id = q.id AND sku.status = 'active'
+     WHERE q.status = 'active'
+     ORDER BY q.code, sku.code
+     LIMIT 1`,
+  );
+  expect(qualitySku, 'seed must provide an active quality with an active SKU').not.toBeNull();
+
+  const csrfToken = await getCsrfToken(page);
+  const res = await page.request.post(`${env.API_URL}/yarn-purchases`, {
+    headers: { 'X-CSRF-Token': csrfToken },
+    data: {
+      date: new Date().toISOString(),
+      vendorId: vendor!.id,
+      items: [
+        {
+          qualityId: qualitySku!.quality_id,
+          skuId: qualitySku!.sku_id,
+          quantity: opts.quantity,
+          unit: 'KG',
+          placements: [
+            {
+              locationId: opts.locationId,
+              floorId: opts.floorId,
+              quantity: opts.quantity,
+              unit: 'KG',
+            },
+          ],
+        },
+      ],
+    },
+  });
+  if (res.status() !== 201) throw new Error(`yarn purchase create failed: ${await res.text()}`);
+  const row = await db.queryOne<{ lot_number: string }>(
+    `SELECT lot_number FROM stock_ledger WHERE sku_id = $1 AND quality_id = $2 AND floor_id = $3
+     ORDER BY created_at DESC LIMIT 1`,
+    [qualitySku!.sku_id, qualitySku!.quality_id, opts.floorId],
+  );
+  if (!row) throw new Error('the yarn purchase must register a stock_ledger row');
+
+  return {
+    lotNumber: row.lot_number,
+    skuId: qualitySku!.sku_id,
+    qualityId: qualitySku!.quality_id,
+    qualityCode: qualitySku!.quality_code,
+    qualityName: qualitySku!.quality_name,
+    skuName: qualitySku!.sku_name,
+    skuShadeNumber: qualitySku!.sku_shade_number,
+  };
+}
 
 // Reads the Stock Balance Fabric tab's placed/unplaced pair for one design,
 // straight off the rendered table row (inventory-balance.page.tsx:224-233:
@@ -80,49 +171,25 @@ test(
     ).toBeGreaterThanOrEqual(2);
     const [placeAt, moveTo] = floorPairs as [(typeof floorPairs)[0], (typeof floorPairs)[0]];
 
-    // Weft source — same derivation as weaving-in.spec.ts (any non-beam-track
-    // floor lot, active masters, >= Q_WEFT balance). Reusing the identical
-    // beam/taka math (100m/15kg + 80m/12kg beams, 30/40/20m taka) means this
-    // spec's derivedWeftKg is the already-hand-verified 9.0 from that spec —
-    // no new arithmetic to re-derive here.
+    // Weft source — this test's OWN funded lot (fundWeftLot), not a draw
+    // against the shared seed lot weaving-in.spec.ts's identical query also
+    // targets: two specs racing the same seed balance is the exact
+    // cross-spec depletion this suite's "own data" rule exists to prevent
+    // (it once starved jw-out.spec.ts's own >=10-balance requirement on a
+    // full-suite run). Reuses placeAt's (location, floor) purely to avoid a
+    // second DB round trip — no domain meaning is shared between "where the
+    // weft lot sits" and "where the receipt places taka".
     const Q_WEFT = 15;
-    const src = await db.queryOne<{
-      lot_number: string;
-      sku_id: string;
-      quality_id: string;
-      quality_code: string;
-      quality_name: string;
-      sku_name: string;
-      sku_shade_number: string | null;
-      loc_name: string;
-      floor_name: string;
-    }>(
-      `SELECT s.lot_number, s.sku_id, s.quality_id,
-              q.code AS quality_code, q.name AS quality_name,
-              sku.name AS sku_name, sku.shade_number AS sku_shade_number,
-              l.name AS loc_name, f.name AS floor_name
-       FROM stock_ledger s
-       JOIN location_floors f ON f.id = s.floor_id
-       JOIN locations l ON l.id = f.location_id
-       JOIN yarn_qualities q ON q.id = s.quality_id
-       JOIN yarn_skus sku ON sku.id = s.sku_id
-       WHERE s.lot_number IS NOT NULL
-         AND s.sku_id IS NOT NULL
-         AND l.status = 'active' AND f.status = 'active'
-         AND q.status = 'active' AND sku.status = 'active'
-       GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
-                sku.name, sku.shade_number, l.name, f.name
-       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-       ORDER BY s.lot_number
-       LIMIT 1`,
-      [Q_WEFT],
-    );
-    expect(src, 'seed must provide a lot with >= Q_WEFT balance on an active floor').not.toBeNull();
+    const src = await fundWeftLot(page, db, {
+      quantity: Q_WEFT,
+      locationId: placeAt.location_id,
+      floorId: placeAt.floor_id,
+    });
 
     // Distinct prefix from weaving-in.spec.ts's FABD-WVI so the two specs'
     // rows stay visually distinguishable in the DB even though codes.unique
     // already guarantees no real collision.
-    const fabricDesign = await createFabricDesign(page, db, src!.quality_id, { prefix: 'FABD-FTR' });
+    const fabricDesign = await createFabricDesign(page, db, src.qualityId, { prefix: 'FABD-FTR' });
 
     const beam1 = await createReceivedBeam(page, db, { netWeight: 15, setLength: 100 });
     const beam2 = await createReceivedBeam(page, db, { netWeight: 12, setLength: 80 });
@@ -148,16 +215,20 @@ test(
     await page.getByLabel(`Gross weight for beam ${beam2.beamNumber}`).fill('14');
     await page.getByLabel(`Pipe weight for beam ${beam2.beamNumber}`).fill('2');
     await fillByLabel(page, 'Beam Value of Goods', '5000');
-    await selectByAriaLabel(page, 'Quality for weft line 1', `${src!.quality_code} – ${src!.quality_name}`);
+    await selectByAriaLabel(page, 'Quality for weft line 1', `${src.qualityCode} – ${src.qualityName}`);
     const skuOptionLabel =
-      src!.sku_shade_number !== null && src!.sku_shade_number !== ''
-        ? `${src!.sku_name} — ${src!.sku_shade_number}`
-        : src!.sku_name;
+      src.skuShadeNumber !== null && src.skuShadeNumber !== ''
+        ? `${src.skuName} — ${src.skuShadeNumber}`
+        : src.skuName;
     await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
-    await selectByAriaLabel(page, 'Source lot for weft line 1', src!.lot_number);
+    await selectByAriaLabel(page, 'Source lot for weft line 1', src.lotNumber);
     await fillByLabel(page, 'Net weight for weft line 1', String(Q_WEFT));
     await clickButton(page, 'Add placement');
-    await selectByAriaLabel(page, 'Select floor and location', `${src!.loc_name} · ${src!.floor_name}`);
+    await selectByAriaLabel(
+      page,
+      'Select floor and location',
+      `${placeAt.location_name} · ${placeAt.floor_name}`,
+    );
     await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
     await clickButton(page, 'Save dispatch');
