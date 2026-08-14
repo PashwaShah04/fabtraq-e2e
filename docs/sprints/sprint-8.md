@@ -237,3 +237,102 @@ own ticket.
 - Open question never asked or answered: should a *cancelled* dispatch's beams be re-issuable
   after a cancelled receipt existed against them? Current behaviour after this sprint's fix: yes
   (cancelled receipts no longer block).
+
+---
+
+## Status append — 2026-08-14: Fabric Taka Register + per-taka placement
+
+**Origin:** user question during manual testing of Weaving In — *"where is the page of fabric taka
+where I can see all the stock? Is this not mentioned in any plan?"* It was not. WI-L1 locked
+"taka-level register **+** aggregate view"; Weaving In shipped the data model and the aggregate
+(Stock Balance → Fabric tab) but never the register. Spec §7's deferral list does not mention it,
+so it fell through the gap between "receipt entry" and "stock overview" rather than being a
+conscious omission.
+
+**Docs:** `docs/brainstorms/2026-08-14-fabric-taka-register.md` (FTR-L1…L14),
+`docs/superpowers/specs/2026-08-14-fabric-taka-register-design.md` (v2),
+`docs/superpowers/plans/2026-08-14-fabric-taka-register-context.md` (locked cross-repo contract)
+plus one implementation plan per repo. All mirrored to all four repos.
+
+### What shipped
+
+A searchable per-roll register at `/fabric-takas` with a detail page, bulk placement, and — the
+change that makes it usable — **location capture on the weaving-in receipt itself**. Requires **no
+Prisma migration**: `FabricTaka.locationId`/`floorId` already existed.
+
+| Repo | Commits | Verified gates (re-run independently by the lead) |
+|------|---------|---------------------------------------------------|
+| `fabtraq-shared` → **1.16.0** | 6 | 1145/1145 (was 1121), lint/typecheck/build clean |
+| `fabtraq-be` | 9 | 714 unit (was 693) + 652 integration, all gates clean |
+| `fabtraq-fe` | 6 | 1281/1281 (was 1265), coverage 93.65 / 87.02 / 86.32 / 93.65 |
+| `e2e` | 6 | **122/122** (was 117), two consecutive uncontended full runs |
+
+### The design debate earned its keep
+
+Three agents (adversarial critic / domain reviewer / simplification advocate) reviewed the v1 spec
+before any code. They found **three errors in the spec itself**:
+
+1. **§2's premise was factually wrong.** It claimed `locationId`/`floorId` were "never written".
+   They are: `createFabricTakaSchema` accepts them as *independent* optionals and the service and
+   repository persist them **with no validation at all** — so `POST /weaving-ins` accepted an
+   inactive location, a floor from a different location, or a floor with no location. A latent
+   defect in already-shipped code, found by reading. Closed by §3.0's guard, shared with the
+   placement path (B-016: guards on create AND edit).
+2. **The feature would have shipped permanently reading "Unplaced".** The receipt form had no
+   location field, so the design required re-entering, on a second screen, a location the
+   storekeeper knew while the rolls were being put on the rack. Nobody sustains that. FTR-L9 moved
+   capture to the receipt header; the register became the correction/move surface.
+3. **The taka serial collides.** `nextTakaSequenceForWeaver` keys on `${FY}:${weaverId}`, so
+   `takaNo` restarts per weaver per year, while the display format `TK-<FY>/<n>` carries no weaver
+   — two weavers both produce `TK-2026-27/1`. Harmless until a feature leans on it as an
+   identifier. FTR-L11 switched the register to `FRC-<challan> / <weaver serial>`, which is
+   provably unique and is what the mill says on the phone; falls back to `/#<takaNo>` because
+   `paperSerialNo` is nullable (and null for every taka currently in the DB).
+
+They also removed work: no new BE repository (no module here splits one aggregate across two), one
+response schema instead of two, `LocationFloorSelect` reused verbatim, and `DataTable` left
+untouched — it has no row-selection support, so selection state lives in the register page rather
+than modifying a component sitting behind ~15 pages.
+
+A fourth spec error surfaced during execution: §4 specified days-in-stock from `createdAt`, which
+is data-entry time. Corrected to the receipt `date` — ageing on the rack starts when the fabric
+arrived.
+
+### Two e2e test-isolation defects (no product bugs)
+
+Neither was a product bug; both were the new spec contending for shared fixtures, and both were
+caught only by full-suite runs.
+
+1. **Shared seed lot.** The spec drew weft from the same lot `jw-out.spec.ts` targets, starving it.
+   Proven causally — removing only the new spec made the suite green. Fixed by funding its own lot
+   via an API-driven purchase, not by reordering files or lowering quantities.
+2. **Shared job worker.** Subtler and intermittent (2 failures in 7 runs, 0 in 3 without the spec).
+   `suggestWeftAllocation` drains open at-JW positions FIFO filtered on `jobWorkerId` + `qualityId`
+   but **never on lot**, and FTR-L12's cancel credits weft back to a position that outlives the
+   test (cancel reverses the receipt's drain, not the dispatch). When quality coincidentally
+   matched — which drifts across a full run as other specs deplete lots — the greedy fill took
+   weaving-in.spec's 9 kg from the leftover position, leaving its own ledger key at delta 0. Fixed
+   by minting a private weaver, making the candidate sets disjoint by construction rather than
+   merely improbable.
+
+### Process note worth keeping
+
+Three separate runs were invalidated by two agents running against the single shared `fabtraq_dev`
+concurrently — twice caused by the lead reading an agent's "idle" notification as a stall. An idle
+notification is emitted between tool rounds and does **not** mean stopped. One further run was
+invalidated by the Vite dev server being killed mid-run under memory pressure
+(`ERR_CONNECTION_REFUSED`, 14 unrelated failures). Parallelise agents across *repos*; the database
+is exclusive, and "my command returned" is not "the resource is free".
+
+### Backlog logged
+
+**B-022** unbounded fabric-stock aggregate read · **B-023** nothing records fabric leaving the
+godown (mitigated by relabelling the Fabric tab count "Received") · **B-024** declared vs derived
+lot totals on the receipt (the paper challan carries both) · **B-025** filter/sort by `cutNotation`
+· **B-026** test helper emits an invalid transporter code prefix (`TR-` vs `TRP`).
+
+### Still outstanding
+
+Unchanged from the sprint's Definition of Done, and needing explicit user approval: publish shared
+**1.15.0**, then **1.16.0**, bump `@pashwashah04/fabtraq-shared` in both `fabtraq-be` and
+`fabtraq-fe` off `^1.14.1`, reinstall, re-verify, and push all four branches. Nothing is pushed.
