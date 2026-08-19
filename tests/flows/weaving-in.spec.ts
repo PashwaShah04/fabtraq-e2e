@@ -130,10 +130,20 @@ test(
     //   beam1 total attributed = 30+40+10=80 (of 100, remaining 20)
     //   beam2 total attributed = 10 (of 80, remaining 70)
     await gotoAndExpect(page, '/weaving-ins/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
-    await fillByLabel(page, 'Paper challan no', '149');
+
+    // BEAM-FIRST ORDER, deliberately: picking beams BEFORE the weaver used to
+    // lose them. Changing the job worker swaps the picker's query key, and the
+    // prune effect read the in-flight (undefined) list as "no beams visible",
+    // clearing the selection even when the incoming list still held them.
+    // The form then looked fine but could not be saved: Save stayed enabled
+    // and pressing it did nothing at all.
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
     await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await expect(page.getByLabel(`Select beam ${beam1.beamNumber}`)).toBeChecked();
+    await expect(page.getByLabel(`Select beam ${beam2.beamNumber}`)).toBeChecked();
+
+    await fillByLabel(page, 'Paper challan no', '149');
 
     // Flipped true before the RE-RECEIVE phase below, which selects one beam
     // only — the header beam count decides whether the per-taka attribution
