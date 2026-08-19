@@ -189,6 +189,21 @@ test(
     await expect(page.locator('[aria-label="derived weft kg"]')).toContainText(/9(\.0+)?/);
     await fillByLabel(page, 'Entered weft kg', '9');
 
+    // CEILING GATE — an allocation above the weaver's still-at-JW balance
+    // must disable Save, not just colour the row. Before this the button
+    // stayed live and the BE refused the POST (WEFT_SOURCE_OVER_CEILING),
+    // which reads to an operator as "the app lost my challan".
+    const saveReceipt = page.getByRole('button', { name: 'Save receipt' });
+    const consumeCell = page.getByLabel(`consume from ${src!.lot_number}`);
+    await consumeCell.fill(String(Q_WEFT + 1));
+    await expect(page.getByText('Exceeds still-at-JW balance')).toBeVisible();
+    await expect(saveReceipt).toBeDisabled();
+
+    // Back within the ceiling: the warning and the block clear together.
+    await consumeCell.fill('9');
+    await expect(page.getByText('Exceeds still-at-JW balance')).toBeHidden();
+    await expect(saveReceipt).toBeEnabled();
+
     await clickButton(page, 'Save receipt');
     await expectToast(page, /^Saved /);
     await expect(page).toHaveURL(/\/weaving-ins\/[^/]+$/);
