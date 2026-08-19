@@ -935,10 +935,10 @@ Logged: 2026-08-14.
 
 ---
 
-## B-028 — `format:check` fails on committed files in three repos (CI is red)
+## B-028 — `format:check` fails on committed files in three repos
 
 **Status:** Open. Found 2026-08-20 while running the Sprint-8 release gates.
-**Severity:** Medium — blocks any green CI run, and therefore any merge-to-`main`.
+**Severity:** Medium — red CI on `fabtraq-fe` today, and it blocks the merge-to-`main` PR everywhere.
 
 `npm run format:check` (Prettier) reports already-committed files as unformatted:
 
@@ -949,8 +949,10 @@ Logged: 2026-08-14.
 | `fabtraq-shared` | 46                             |
 | `e2e`            | n/a — no `format:check` script |
 
-It is **step 2 of `.github/workflows/ci.yml`** in all three repos, so CI cannot go green on the
-`feat/s6-consolidated-*` branches as they stand.
+It is **step 2 of `.github/workflows/ci.yml`** in all three repos. When it bites differs by trigger:
+`fabtraq-fe` runs CI on `push`/`pull_request` for `'**'`, so the 2026-08-20 push to
+`feat/s6-consolidated-fe` **is failing now**; `fabtraq-be` and `fabtraq-shared` only trigger on
+`main` and PRs into `main`, so theirs surfaces the moment a merge PR is opened.
 
 How it hid: only `fabtraq-be`'s `verify` script chains `format:check`; `fabtraq-fe` and
 `fabtraq-shared` run `lint && typecheck && test && build` with no formatting step. Agents that

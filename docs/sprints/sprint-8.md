@@ -406,9 +406,10 @@ shape as [B-027](../backlog.md#b-027--e2e-suite-has-a-low-rate-load-sensitive-ti
 ### Still outstanding
 
 - **B-028 (new, found while releasing).** `npm run format:check` fails on already-committed files
-  in three repos — be 140, fe ~225, shared 46. It is step 2 of CI in all three, so **CI is red on
-  these branches**. Left unfixed here deliberately: a ~400-file whitespace commit would bury the
-  one-line version bump this release is supposed to be.
+  in three repos — be 140, fe ~225, shared 46. It is step 2 of CI in all three. `fabtraq-fe` builds
+  every branch, so **its CI is failing on the branch pushed today**; be and shared only build `main`
+  and PRs into it, so theirs lands on the merge PR. Left unfixed here deliberately: a ~400-file
+  whitespace commit would bury the one-line version bump this release is supposed to be.
 - **Nothing is merged to `main`** in any repo (be +221, fe +251, shared +121 commits ahead;
   e2e +63 ahead of `master`). Open since S6.
 - **Sprint 7** (Reports, Dashboard, UAT) not started.
