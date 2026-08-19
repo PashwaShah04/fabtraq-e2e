@@ -932,3 +932,36 @@ Likely cheapest fixes: raise the toast/visibility timeouts that are tuned for an
 and/or give the pdf-parser webServer a longer readiness timeout.
 
 Logged: 2026-08-14.
+
+---
+
+## B-028 — `format:check` fails on committed files in three repos (CI is red)
+
+**Status:** Open. Found 2026-08-20 while running the Sprint-8 release gates.
+**Severity:** Medium — blocks any green CI run, and therefore any merge-to-`main`.
+
+`npm run format:check` (Prettier) reports already-committed files as unformatted:
+
+| Repo             | Files failing                  |
+| ---------------- | ------------------------------ |
+| `fabtraq-be`     | 140                            |
+| `fabtraq-fe`     | ~225                           |
+| `fabtraq-shared` | 46                             |
+| `e2e`            | n/a — no `format:check` script |
+
+It is **step 2 of `.github/workflows/ci.yml`** in all three repos, so CI cannot go green on the
+`feat/s6-consolidated-*` branches as they stand.
+
+How it hid: only `fabtraq-be`'s `verify` script chains `format:check`; `fabtraq-fe` and
+`fabtraq-shared` run `lint && typecheck && test && build` with no formatting step. Agents that
+verified per-repo with `verify` (or with the individual gates) never executed it. The offenders are
+mostly `.superpowers/` planning docs and test files — i.e. exactly the paths nobody opens in a
+watch loop.
+
+**Fix:** `npm run format` in each of the three repos, one commit per repo, then re-run the gates.
+Deliberately _not_ done as part of the 2026-08-20 release: a ~400-file whitespace diff on top of a
+one-line version bump makes the release unreviewable. Do it as its own change, first thing before
+the merge-to-`main` work.
+
+**Also worth doing:** add `format:check` to `fabtraq-fe` and `fabtraq-shared`'s `verify` scripts so
+the local gate matches CI, which is the actual root cause of the drift.

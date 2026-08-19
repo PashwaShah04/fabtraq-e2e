@@ -1,6 +1,7 @@
 # Sprint 8 — Weaving domain (beam dispatch out, grey fabric receipt in)
 
-**Status:** ✅ Code-complete, fully verified, **unpushed and unpublished** (awaiting user go)
+**Status:** ✅ Shipped — shared **1.16.0 published**, all four branches **pushed 2026-08-20**. Not
+merged to `main`.
 **Window:** 2026-07-30 → 2026-08-14
 **Branches:** `feat/s6-consolidated-shared` / `-be` / `-fe` / `-e2e` (one per repo)
 
@@ -372,8 +373,42 @@ lot totals on the receipt (the paper challan carries both) · **B-025** filter/s
 · **B-026** test helper emits an invalid transporter code prefix (`TR-` vs `TRP`) · **B-027** low-rate
 load-sensitive e2e timeout flake.
 
+### Release — 2026-08-20 (Definition of Done closed)
+
+Done on the user's explicit go (session
+[`session_01XDj53MdB2b3LTTfy5yjxfs`](https://claude.ai/code/session_01XDj53MdB2b3LTTfy5yjxfs)).
+
+- **shared 1.16.0 published** to `npm.pkg.github.com` (shasum `8e74f0475e48b5baa1e7979baff82dc7825fc4df`).
+- **1.15.0 was deliberately skipped.** Once BE/FE moved to `^1.16.0` nothing could ever resolve
+  1.15.0, and publishing it would have meant a detached build of `30bffbf` for zero consumers. The
+  registry gap `1.14.1 → 1.16.0` is intentional, not a mistake to be repaired later.
+- `@pashwashah04/fabtraq-shared` bumped `^1.14.1 → ^1.16.0` in `fabtraq-be` and `fabtraq-fe` and
+  reinstalled **from the registry** — both lockfiles now carry the published tarball's integrity
+  hash, which is the proof that what shipped is what was tested.
+- All four branches pushed: `feat/s6-consolidated-{shared,be,fe,e2e}`.
+
+Re-verified after the bump (dev servers stopped first; `fabtraq_dev` was reset by the integration
+run and re-seeded afterwards):
+
+| Repo | Result |
+|------|--------|
+| `fabtraq-shared` | 1148/1148 · lint/typecheck/build clean |
+| `fabtraq-be` | 714 unit + 653 integration · lint/typecheck/build clean |
+| `fabtraq-fe` | 1297 tests · coverage thresholds met · build clean |
+
+One FE integration test (`jw-challans-in/form.page.test.tsx`) hit a 5 s timeout while the BE suite
+ran concurrently on the same machine; green in isolation and green on the coverage re-run. Same
+shape as [B-027](../backlog.md#b-027--e2e-suite-has-a-low-rate-load-sensitive-timeout-flake).
+
+**e2e was not re-run.** The bump swaps a local tarball for the byte-identical published artifact;
+122/122 from 2026-08-14 stands.
+
 ### Still outstanding
 
-Unchanged from the sprint's Definition of Done, and needing explicit user approval: publish shared
-**1.15.0**, then **1.16.0**, bump `@pashwashah04/fabtraq-shared` in both `fabtraq-be` and
-`fabtraq-fe` off `^1.14.1`, reinstall, re-verify, and push all four branches. Nothing is pushed.
+- **B-028 (new, found while releasing).** `npm run format:check` fails on already-committed files
+  in three repos — be 140, fe ~225, shared 46. It is step 2 of CI in all three, so **CI is red on
+  these branches**. Left unfixed here deliberately: a ~400-file whitespace commit would bury the
+  one-line version bump this release is supposed to be.
+- **Nothing is merged to `main`** in any repo (be +221, fe +251, shared +121 commits ahead;
+  e2e +63 ahead of `master`). Open since S6.
+- **Sprint 7** (Reports, Dashboard, UAT) not started.
