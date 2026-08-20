@@ -283,3 +283,227 @@ test(
     await expect(option).toContainText(`${item2!.lot_no} — ${PARTY_LOT}`);
   },
 );
+
+/**
+ * Drives the per-lot-sources JW-In form for the MULTI-source case: one
+ * received lot fed by N source rows under `lots.0`, fully placed. Same shape
+ * as the single-source `receiveLot` above but generalized over `sources` —
+ * modeled on the RED/BLUE cross-SKU test in tests/flows/jw-in-yarn.spec.ts
+ * (copied, not imported).
+ */
+async function receiveMergedLot(
+  page: import('@playwright/test').Page,
+  lotSrc: SourceLotRow,
+  sources: readonly { outChallanNo: string; q: number }[],
+  floor: { loc_code: string; loc_name: string; floor_name: string },
+  netWeight: number,
+): Promise<string> {
+  await gotoAndExpect(page, '/jw-challans-in/new');
+  await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
+
+  await selectByAriaLabel(page, 'quality, lots.0', `${lotSrc.quality_code} – ${lotSrc.quality_name}`);
+  await selectByAriaLabel(page, 'sku, lots.0', skuLabelOf(lotSrc));
+  await fillByLabel(page, 'net weight, lots.0', String(netWeight));
+
+  for (const [i, s] of sources.entries()) {
+    await page.getByLabel('add source, lots.0').click();
+    await page.getByLabel(`source, lots.0.sources.${i}`, { exact: true }).click();
+    await fillByLabel(page, 'Search OUT challan no', s.outChallanNo);
+    const option = page.getByRole('option', { name: s.outChallanNo });
+    await expect(option).toBeVisible();
+    await option.click();
+    await expect(page.getByLabel(`consumed quantity, lots.0.sources.${i}`)).toHaveValue(String(s.q));
+  }
+
+  await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ covered');
+
+  await clickButton(page, 'Add placement');
+  await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
+  await selectByAriaLabel(page, 'Select floor', floor.floor_name);
+  await fillByLabel(page, 'placement quantity 1', String(netWeight));
+
+  await clickButton(page, 'Save receipt');
+  await expectToast(page, /^Saved /);
+  await expect(page).toHaveURL(/\/jw-challans-in\/[^/]+$/);
+  return page.url().split('/').pop()!;
+}
+
+// I1 (final-review.md, 2026-08-20): the merge path — two source lots with
+// DIFFERENT party lots combined into one received lot — had no non-mock
+// coverage; jw-challan-in.service.test.ts's "combines distinct party lots
+// when sources disagree" mocks findPartyLotsByLotNumbers and never proves
+// the resolution against a real DB. This test also exercises the exact
+// shape of C1 (shared/src/primitives/party-lot.ts, fixed in 1.19.1): a
+// combined value re-entering combinePartyLots at a later hop, alongside one
+// of its own ancestors, must not duplicate that ancestor or lose the sort.
+test(
+  'a merge combines two source party lots into one sorted, deduped string, and a third hop reintroducing one ancestor stays clean',
+  async ({ page, db }) => {
+    const now = Date.now() % 100000;
+    const PARTY_A = `PL-M1-${now}`;
+    const PARTY_B = `PL-M2-${now}`;
+    const Q = 20;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    // Purchase A carries 2Q so half survives hop 1 untouched, to serve as the
+    // repeated ancestor at hop 3. Both purchases resolve the same "first
+    // active" vendor/quality/sku/location (deterministic seed query,
+    // createPurchaseWithPartyLot above) — the merge under test is about
+    // party lots, not cross-SKU sourcing (jw-in-yarn.spec.ts covers that).
+    const srcA = await createPurchaseWithPartyLot(page, db, PARTY_A, Q * 2);
+    const srcB = await createPurchaseWithPartyLot(page, db, PARTY_B, Q);
+
+    const receivingFloor = await db.queryOne<{
+      loc_code: string;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT l.code AS loc_code, l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM location_floors f JOIN locations l ON l.id = f.location_id
+       WHERE f.id <> $1 AND l.status = 'active' AND f.status = 'active'
+       ORDER BY f.id LIMIT 1`,
+      [srcA.floor_id],
+    );
+    expect(receivingFloor, 'seed must provide a second active floor to receive into').not.toBeNull();
+
+    // Hop 1 — Q of A and all of B out for Twisting, received back as ONE lot
+    // drawing from BOTH sources.
+    const outA1 = await openJwPosition(page, jobWorker!, srcA, 'Twisting', Q);
+    const outB = await openJwPosition(page, jobWorker!, srcB, 'Twisting', Q);
+    const in1Id = await receiveMergedLot(
+      page,
+      srcA,
+      [
+        { outChallanNo: outA1, q: Q },
+        { outChallanNo: outB, q: Q },
+      ],
+      receivingFloor!,
+      Q * 2,
+    );
+
+    const item1 = await db.queryOne<{ lot_no: string; party_lot_no: string | null }>(
+      `SELECT lot_no, party_lot_no FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [in1Id],
+    );
+    expect(item1, 'hop 1 must mint exactly one yarn item row').not.toBeNull();
+    const combined = [PARTY_A, PARTY_B].sort().join(' / ');
+    expect(item1!.party_lot_no).toBe(combined);
+
+    await gotoAndExpect(page, `/jw-challans-in/${in1Id}`);
+    await expect(page.getByTestId('party-lot-0')).toContainText(combined);
+
+    // Hop 3 — the merged lot goes out again (Dyeing: it already carries
+    // Twisting from hop 1's default-ticked work-done chip), alongside the
+    // REMAINING half of source A's own raw lot (untouched, still
+    // Twisting-eligible — a separate JW-Out challan, so it's fine to reuse
+    // the same job-work type). Receiving both together is exactly the C1
+    // shape: PARTY_A is already present inside the merged lot's own combined
+    // string when it reappears as a second source's atomic party lot.
+    const mergedSrc: SourceLotRow = {
+      ...srcA,
+      lot_number: item1!.lot_no,
+      loc_name: receivingFloor!.loc_name,
+      floor_name: receivingFloor!.floor_name,
+      floor_id: receivingFloor!.floor_id,
+    };
+    const outMerged = await openJwPosition(page, jobWorker!, mergedSrc, 'Dyeing', Q * 2);
+    const outARemainder = await openJwPosition(page, jobWorker!, srcA, 'Dyeing', Q);
+
+    const in3Id = await receiveMergedLot(
+      page,
+      srcA,
+      [
+        { outChallanNo: outMerged, q: Q * 2 },
+        { outChallanNo: outARemainder, q: Q },
+      ],
+      receivingFloor!,
+      Q * 3,
+    );
+
+    const item3 = await db.queryOne<{ lot_no: string; party_lot_no: string | null }>(
+      `SELECT lot_no, party_lot_no FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [in3Id],
+    );
+    expect(item3, 'hop 3 must mint exactly one yarn item row').not.toBeNull();
+    // NOT "PL-M1-... / PL-M1-... / PL-M2-..." — the exact bug C1 fixed.
+    expect(item3!.party_lot_no).toBe(combined);
+    const tokens = item3!.party_lot_no!.split(' / ');
+    expect(new Set(tokens).size).toBe(tokens.length);
+    expect(tokens).toEqual([...tokens].sort());
+  },
+);
+
+// I2/I3 (final-review.md, 2026-08-20): beamCompositionSourceResponseSchema
+// gained a required partyLotNo field with no live or response-validated
+// exercise — `npm test` in the FE never runs the smoke/contract suite, so a
+// mapper that failed to project the field would only be caught by a real
+// wire round-trip. Reuses the in_house beam receipt pattern from
+// beam-receipt.spec.ts (copied, not imported) with a party-lot-carrying
+// source instead of a bare seed lot, so the composition table cell being
+// asserted is never '—'.
+test(
+  'an in_house beam receipt composition slice carries its source lot party lot number, end to end',
+  async ({ page, db }) => {
+    const PARTY = `PL-BEAM-${Date.now() % 100000}`;
+    const Q = 6;
+
+    const src = await createPurchaseWithPartyLot(page, db, PARTY, Q);
+
+    const beamNumber = `BM-PL-${Date.now()}`;
+
+    await gotoAndExpect(page, '/beam-receipts/new');
+    await page
+      .getByRole('group', { name: 'beam origin' })
+      .getByRole('button', { name: 'In-house', exact: true })
+      .click();
+
+    await fillByLabel(page, 'beam number, items.0', beamNumber);
+    await fillByLabel(page, 'net weight, items.0', String(Q));
+
+    await clickButton(page, 'add yarn to item 1');
+    await selectByAriaLabel(
+      page,
+      'yarn quality, items.0.yarns.0',
+      `${src.quality_code} – ${src.quality_name}`,
+    );
+    await selectByAriaLabel(page, 'yarn sku, items.0.yarns.0', skuLabelOf(src));
+    await fillByLabel(page, 'yarn quantity, items.0.yarns.0', String(Q));
+
+    await clickButton(page, `add pull for ${src.quality_code}`);
+    await page.locator('[aria-label="pull lot, pulls.0"]').click();
+    const pullLotOption = page.getByRole('option', { name: src.lot_number });
+    await expect(pullLotOption).toContainText(/· \d+\.\d{3} KG · Raw$/);
+    await pullLotOption.click();
+
+    await selectByAriaLabel(page, 'pull floor, pulls.0', `${src.loc_name} · ${src.floor_name}`);
+    await fillByLabel(page, 'pull quantity, pulls.0', String(Q));
+
+    await clickButton(page, 'Save beam receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/beam-receipts\/[^/]+$/);
+
+    const receiptId = page.url().split('/').pop()!;
+
+    const compRow = await db.queryOne<{ party_lot_no: string | null }>(
+      `SELECT bcs.party_lot_no
+       FROM beam_composition_sources bcs
+       JOIN beam_receipt_items bri ON bri.id = bcs.beam_item_id
+       WHERE bri.beam_receipt_id = $1
+       LIMIT 1`,
+      [receiptId],
+    );
+    expect(compRow, 'the beam receipt must write one composition source row').not.toBeNull();
+    expect(compRow!.party_lot_no).toBe(PARTY);
+
+    // Live rendering — the one live load that both closes I3's visual gap
+    // for this surface and is the only response-validation exercise of
+    // beamCompositionSourceResponseSchema against a real backend response.
+    await gotoAndExpect(page, `/beam-receipts/${receiptId}`);
+    await expect(page.getByRole('cell', { name: PARTY, exact: true })).toBeVisible();
+  },
+);
