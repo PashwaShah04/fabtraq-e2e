@@ -996,3 +996,24 @@ Three integration tests still exercise this path deliberately (`inventory-placem
 **Severity:** Low — the backend catches the mismatch; the UI just allows a nonsensical intermediate state.
 
 `SourceLotPicker`'s `onChange` sets `sourceLotNumber`, `availableFloors` and clears `placements`, but never sets `items.N.unit`. So the row's editable unit `<Select>` can diverge from the picked lot's actual denomination (KG vs METER). The backend rejects it — balances are keyed by unit, so a METER request against a KG lot finds zero available — but the form lets the two drift silently until save. The check-1 warning sidesteps this by formatting with the lot's own unit (captured into `lotUnit` state), rather than the form field. Proper fix: pin the unit from the lot on selection, or make it read-only once a lot is chosen. Pre-existing; not introduced by L23.
+
+## B-032 — JW-Out line-item guard messages wrap one word per line
+
+**Status:** Open. Found 2026-08-20 by visual verification of L23's guards (green tests did not surface it).
+**Severity:** Low — both guards fire correctly and the text is legible; it is ugly, not broken.
+
+The Line-items table has ten columns, so the `Net Wt` cell is ~70px wide. Both L23 guard messages render in that cell's `<FieldError>` and wrap to 5-8 lines of one or two words:
+
+- `Only 50.000 KG available in this lot` (check 1, `ChallanOutLineItemRow.tsx`)
+- `Placements must add up to the net weight — 50 of 30 KG allocated.` (check 2, the shared schema's superRefine)
+
+A `w-44` on the `<td>` was tried and had **no effect** — the auto table layout ignores it while the Placements column dominates the width; it was reverted rather than left in as a no-op. Real fixes, in rough order of preference: let the error text span the row beneath the inputs instead of living inside the narrow cell; or shorten both strings (the check-2 string lives in `@pashwashah04/fabtraq-shared`, so that half needs a republish). Note the `ConservationBar` in the Placements column already states the same fact far more legibly ("Over by 20.000"), so check 2's long message is largely redundant with it.
+
+Screenshots: `e2e/e2e-artifacts/conservation-1-over-balance.png`, `conservation-2-not-conserved.png`.
+
+## B-033 — Line-items "Totals" row renders NaN for blank Bags / Gross Wt
+
+**Status:** Open. Pre-existing; observed 2026-08-20 during L23 visual verification. Not caused by L23.
+**Severity:** Low — cosmetic, but it is on-screen on every new JW-Out challan.
+
+The JW-Out form's totals row shows `Totals NaN` for Bags and `NaN kg` for Gross Wt whenever those optional inputs are left blank, because the reducer sums `undefined`/`NaN` from `valueAsNumber` registrations instead of coalescing to 0. Visible in both screenshots above. Fix: coalesce non-finite values to 0 in the totals reducer.
