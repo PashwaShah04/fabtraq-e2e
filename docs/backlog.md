@@ -967,3 +967,32 @@ the merge-to-`main` work.
 
 **Also worth doing:** add `format:check` to `fabtraq-fe` and `fabtraq-shared`'s `verify` scripts so
 the local gate matches CI, which is the actual root cause of the drift.
+
+## B-029 — Retire the dead `jw_challan_out_item` Place-Stock branch
+
+**Status:** Open. Created 2026-08-20 alongside L23.
+**Severity:** Low — dead code for new data, not a defect. Removing it is riskier than leaving it.
+
+Since L23, JW-Out items are always created `fully_placed`, so they never enter the Place Stock queue. These paths in `fabtraq-be` are now reachable only by rows created before that change:
+
+| Path                                         | Location                                     |
+| -------------------------------------------- | -------------------------------------------- |
+| Queue listing (`jw_challan_out_item` branch)  | `place-stock.service.ts:185-191, :231-241`   |
+| `resolveSourceItemMeta` challan-out cases     | `place-stock.service.ts:902, :958, :1037`    |
+| `applyPlacementLedger` dispatch legs          | `prisma-inventory.service.ts:1955`           |
+
+Three integration tests still exercise this path deliberately (`inventory-placement-ledger.service`, `place-stock-ledger-wiring.service`, `jw-challan-in-be8.routes`); since 2026-08-20 they seed their pending rows directly via Prisma, because the route can no longer create one. Remove the branch only once no pre-L23 `pending`/`partially_placed` out-items remain in any environment — and delete those fixtures with it.
+
+## B-030 — Re-enter `JWO-2026-27-026`
+
+**Status:** Open. User-owned manual fix-up. **Note:** the row was destroyed when the e2e suite truncated `fabtraq_dev` on 2026-08-20; it survives only in `db-snapshots/fabtraq_dev-2026-08-20-pre-conservation-tests.sql`. If that snapshot is never restored, this item is moot — close it.
+**Severity:** Medium — while it existed, the lot it drew on still read its full pre-challan balance, so it could be issued twice.
+
+`JWO-2026-27-026` dispatched 100 kg of `LOT-260819-0028` (50 kg on floor) with zero placements, so it wrote zero `stock_ledger` rows. It is the defect that prompted L23. It could not be repaired in place — `editPlacement` 409s on `jw_challan_out_item`, and topping it up through the Place Stock queue stops at 50 kg. The fix is cancel-and-recreate with a real placement. No migration or backfill (L8 convention).
+
+## B-031 — JW-Out row's unit `<Select>` is not pinned to the picked lot
+
+**Status:** Open. Found 2026-08-20 while implementing L23's check 1.
+**Severity:** Low — the backend catches the mismatch; the UI just allows a nonsensical intermediate state.
+
+`SourceLotPicker`'s `onChange` sets `sourceLotNumber`, `availableFloors` and clears `placements`, but never sets `items.N.unit`. So the row's editable unit `<Select>` can diverge from the picked lot's actual denomination (KG vs METER). The backend rejects it — balances are keyed by unit, so a METER request against a KG lot finds zero available — but the form lets the two drift silently until save. The check-1 warning sidesteps this by formatting with the lot's own unit (captured into `lotUnit` state), rather than the form field. Proper fix: pin the unit from the lot on selection, or make it read-only once a lot is chosen. Pre-existing; not introduced by L23.
