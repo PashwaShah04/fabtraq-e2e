@@ -149,6 +149,7 @@ async function receiveLot(
   outChallanNo: string,
   floor: { loc_code: string; loc_name: string; floor_name: string },
   q: number,
+  place = true,
 ): Promise<void> {
   await gotoAndExpect(page, '/jw-challans-in/new');
   await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
@@ -187,10 +188,15 @@ async function receiveLot(
   // Place the full quantity via the always-visible Place-stock region (no
   // click-to-reveal expander anymore) so the minted lot is fully_placed and
   // immediately sourceable by a follow-up JW-Out.
-  await clickButton(page, 'Add placement');
-  await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
-  await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  // place=false leaves the receipt unplaced — the item must then surface in
+  // the /place-stock queue (placementStatus='pending'), NOT silently read as
+  // fully placed off the column default.
+  if (place) {
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
+    await selectByAriaLabel(page, 'Select floor', floor.floor_name);
+    await fillByLabel(page, 'placement quantity 1', String(q));
+  }
 
   await clickButton(page, 'Save receipt');
   await expectToast(page, /^Saved /);
@@ -795,5 +801,52 @@ test(
     expect(ledgerRow, 'the minted lot must carry a floor-credit stock_ledger row').not.toBeNull();
     expect(ledgerRow!.sku_id).toBeNull();
     expect(Number(ledgerRow!.in_quantity)).toBeCloseTo(Q_TOTAL, 3);
+  },
+);
+
+test(
+  'a JW-In receipt saved without placements lands in the place-stock queue as pending',
+  async ({ page, db }) => {
+    const Q = 10;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
+
+    const receivingFloor = await db.queryOne<{
+      loc_code: string;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT l.code AS loc_code, l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM location_floors f JOIN locations l ON l.id = f.location_id
+       WHERE f.id <> $1 AND l.status = 'active' AND f.status = 'active'
+       ORDER BY f.id LIMIT 1`,
+      [src!.floor_id],
+    );
+    expect(receivingFloor, 'seed must provide a second active floor').not.toBeNull();
+
+    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
+    await receiveLot(page, src!, outChallanNo, receivingFloor!, Q, false);
+
+    const challanId = page.url().split('/').pop();
+    const item = await db.queryOne<{ id: string; lot_no: string; placement_status: string }>(
+      `SELECT id, lot_no, placement_status FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [challanId],
+    );
+    expect(item, 'the created receipt must have exactly one yarn item').not.toBeNull();
+    expect(item!.placement_status).toBe('pending');
+
+    await gotoAndExpect(page, '/place-stock');
+    await expect(page.getByRole('row', { name: item!.lot_no })).toBeVisible();
+    await page.getByRole('row', { name: item!.lot_no }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`/place-stock/jw_challan_in_yarn_item/${item!.id}$`),
+    );
   },
 );
