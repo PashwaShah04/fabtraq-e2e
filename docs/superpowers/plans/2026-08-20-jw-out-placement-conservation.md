@@ -1,5 +1,7 @@
 # JW-Out Placement Conservation Implementation Plan
 
+**Status:** ✅ Shipped 2026-08-20 — see `docs/sprints/sprint-8.md` § *Status append — 2026-08-20*. Checkboxes below were not back-filled.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make it impossible to save a JW-Out challan whose net weight is not fully allocated to floors that actually hold the stock.

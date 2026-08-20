@@ -575,7 +575,11 @@ Four sections (all in the design doc):
 of SKU colour %s and deduct from inventory," clarified into a full **beam-register
 redesign**. Full durable record:
 `docs/brainstorms/2026-06-24-beam-register-redesign.md` (decisions BR-L1…BR-L7).
-**Status:** **COMPLETE (2026-07-08) — PDF-ingest integration SHIPPED, code-complete + live-verified; pushes pending.**
+**Status:** **COMPLETE (2026-07-08) — PDF-ingest integration SHIPPED, code-complete + live-verified.**
+**Push state corrected 2026-08-20:** everything below is pushed (`git log @{u}..` empty in all four
+repos; shared published through 1.19.1). Ignore the "pushes pending" / "local-only" / "worktree"
+clauses in the body — they were true when written and have been superseded by the 2026-07-17,
+2026-07-23, 2026-07-27 and 2026-08-20 batch pushes.
 The §9 integration landed (session `session_014KByE3Ry1JrQLVuSMsvn7y`): shared 1.6.0
 (zod-v3 port of the parser contract + `parseDesignPdf` registry endpoint, published to
 GitHub Packages, commits `e97b29a..53c95b5` tag `v1.6.0`), BE proxy
@@ -673,7 +677,8 @@ integration tests only. Consider adding queue-based E2E chains for those two in 
 placing stock twice to one floor creates two placement rows; floor UUIDs shown
 instead of names; placement UI width regression; Place Stock shows the pre-transfer
 floor after a Stock Transfer.
-**Status:** **COMPLETE (2026-07-13, same session — all local, unpushed).** Design LOCKED at
+**Status:** **COMPLETE (2026-07-13).** *("all local, unpushed" as originally written — pushed since;
+verified 2026-08-20.)* Design LOCKED at
 `docs/superpowers/specs/2026-07-13-place-stock-ledger-sync-design.md` (mirrored
 be/fe/e2e). Canonical rule established: `stock_ledger` is the single source of
 truth for current location; `placements` is a put-away event record. Fix = FE
@@ -701,7 +706,7 @@ cancel, so every edit re-matches ALL prior forward rows and rewrites them at
 newQuantity → floor legs double per edit (1→2→4→8; verified 33 ledger rows after
 4 edits). Pre-existing from the 2026-07-10 workstream; single-edit tests couldn't
 see it. Bucket side (delta-based) was always correct.
-**Status:** **FIXED 2026-07-14** — BE `a9b320d` on feat/s6-be (local): scan loop
+**Status:** **FIXED 2026-07-14** — BE `a9b320d` on feat/s6-be (pushed since; verified 2026-08-20): scan loop
 replaced with append-only delta correction rows derived from the placement row's
 old/new state (one row on qty change, two on floor change, nothing on no-op save).
 Repeated-edit conservation tests added (3-edit sequence, row-count growth exactly
@@ -967,6 +972,12 @@ the merge-to-`main` work.
 
 **Also worth doing:** add `format:check` to `fabtraq-fe` and `fabtraq-shared`'s `verify` scripts so
 the local gate matches CI, which is the actual root cause of the drift.
+
+**Do not skip the last step:** `npm run format` runs inside each repo, and the umbrella `docs/` tree
+is not a repo and has no npm scripts — so reformatting the three repos re-opens the cross-tree drift
+closed on 2026-08-20. After formatting, re-copy `backlog.md`, `sprints/sprint-8.md` and
+`brainstorms/2026-05-19-jw-domain-redesign.md` from a repo back to the umbrella `docs/`, and re-check
+with `md5sum`.
 
 ## B-029 — Retire the dead `jw_challan_out_item` Place-Stock branch
 

@@ -1,7 +1,8 @@
 # Sprint 8 — Weaving domain (beam dispatch out, grey fabric receipt in)
 
 **Status:** ✅ Shipped — shared **1.16.0 published**, all four branches **pushed 2026-08-20**. Not
-merged to `main`.
+merged to `main`. Three post-release correctness workstreams also shipped and pushed on the same
+branches (shared 1.17.0 → 1.19.1) — see [Status append — 2026-08-20](#status-append--2026-08-20-post-release-correctness-workstreams).
 **Window:** 2026-07-30 → 2026-08-14
 **Branches:** `feat/s6-consolidated-shared` / `-be` / `-fe` / `-e2e` (one per repo)
 
@@ -413,3 +414,128 @@ shape as [B-027](../backlog.md#b-027--e2e-suite-has-a-low-rate-load-sensitive-ti
 - **Nothing is merged to `main`** in any repo (be +221, fe +251, shared +121 commits ahead;
   e2e +63 ahead of `master`). Open since S6.
 - **Sprint 7** (Reports, Dashboard, UAT) not started.
+
+---
+
+## Status append — 2026-08-20: post-release correctness workstreams
+
+Three workstreams landed **after** the Sprint 8 release above, all on the same four
+`feat/s6-consolidated-*` branches, all **pushed**, with shared **1.17.0 → 1.19.1 published** to
+`npm.pkg.github.com` and consumed from the registry by both `fabtraq-be` and `fabtraq-fe`
+(lockfiles carry the published tarball's integrity hash for `1.19.1`).
+
+Written up on 2026-08-20 in session
+[`session_01TNUv9gbV11RniPWVs456Lo`](https://claude.ai/code/session_01TNUv9gbV11RniPWVs456Lo), from
+the git/registry record plus the two specs — the implementation sessions did not leave a handoff.
+
+They are recorded here rather than as a new sprint: Sprint 7 (Reports, Dashboard, UAT) has not
+started, and these are post-sprint correctness work in the shape `sprint-6.md` already uses for its
+own post-S6 bug-fix appends.
+
+### 1. JW-Out placement conservation (L23)
+
+**Origin:** `JWO-2026-27-026` dispatched 100 kg of a lot holding 50 kg and wrote **zero**
+`stock_ledger` rows. Both `assertLotBalances` and `applyChallanOutLedger` iterate `item.placements`;
+the item had none, so both loops were no-ops and `netWeight` was never compared to anything. The
+source lot still read its full balance and could be issued again.
+
+**Decision (L23, amends L14):** L14's "placements may be filled in later" is **inbound-only**.
+Outbound requires `Σ placements.quantity === netWeight` (±0.001) at save time. Inbound keeps its
+awaiting-placement bucket, which is the asymmetry that produced the bug.
+
+Three checks, per spec §3: check 2 (conservation) enforced **twice** — in the shared zod schema
+(covers both HTTP routes and both FE forms in one edit) and as a `JwChallanOutService` guard (covers
+the internal `createIn` caller and unit-test inputs that never reach zod); check 1 (`netWeight ≤`
+the lot's on-floor balance) is FE-only fast feedback, mathematically implied on the backend; check 3
+already existed. No migration, no response-shape change.
+
+**Consequence:** the L11 accountant/storekeeper split no longer applies to JW-Out — out-items are
+always created `fully_placed`, so the `jw_challan_out_item` branch of the Place Stock queue is dead
+for new data. Left in place for pre-existing rows (**B-029**).
+
+Shared **1.17.0**. Docs: `docs/superpowers/specs/2026-08-20-jw-out-placement-conservation-design.md`,
+plan `docs/superpowers/plans/2026-08-20-jw-out-placement-conservation.md`, brainstorm L23.
+
+### 2. JW-In status + cancelled-parent placement guard + ledger repair
+
+**Origin:** user report on `JWI-2026-27-016` ("no option to place the stock"), which surfaced three
+defects of the same family — **cancellation and provenance were inferred rather than recorded**.
+
+- **`jw_challans_in.status`** (`active | cancelled`) — JW-In was the only transaction whose
+  cancelled state existed nowhere but as reversal rows in `stock_ledger`, re-derived on demand by
+  `hasReversalRows()`. A cancelled receipt was byte-for-byte identical to a live one and its Cancel
+  button stayed enabled forever. Migration backfills from the ledger markers (L9: backfill is
+  mandatory here, unlike the party-lot one).
+- **Cancelled-parent guard** — `parentActive` projected through the one resolver every placement
+  path already calls, rejecting writes under any dead parent, for all three source types.
+- **`mintPlacements` fix** (`505ba54`) — skipped on empty placements, leaving status at the
+  `fully_placed` DB default, so unplaced JW-In items never reached the Place Stock queue. This is
+  the defect the user actually reported.
+- **Ledger repair script** (`62375a0`, made idempotent by net-position grouping in `a3c68e2`) —
+  reverses rows written against already-cancelled parents. In `fabtraq_dev` that was **125 kg of
+  phantom yarn on real floors** (`LOT-260820-0003` 100 kg + `LOT-260820-0004` 25 kg): each lot nets
+  to zero so no aggregate alarm fires, but per position it is bucket −q and floor +q. The script was
+  **run against `fabtraq_dev` and every affected position verified back at 0.000**; it is
+  mutation-tested and safe to re-run.
+
+**The tagging asymmetry is load-bearing** (spec §4.0): `applyPlacementLedger` writes
+`placement`-tagged bucket→floor pairs for `yarn_purchase_item` / `jw_challan_in_yarn_item` but
+**`challan_out`**-tagged floor→JW pairs for `jw_challan_out_item`. So `cancelIn` reversing only
+`challan_out` is correct, not a missing step — an earlier draft recorded it as a defect and proposed
+a shared reversal function; that proposal is **withdrawn**.
+
+Shared **1.18.0** (`JwChallanInStatus` on the JW-In response, `parentActive` on the place-stock item
+detail). FE surfaces the status and gates edit/cancel actions on it for both yarn purchases and JW-In
+receipts.
+
+### 3. Party-lot carry-forward
+
+The vendor's party lot number now survives every job-work hop and stays visible on returned yarn
+until that yarn becomes a beam.
+
+**Approach A — denormalized per generation** (L10): each JW-In yarn item and each beam composition
+source stores its **own** resolved party lot, combined from its immediate sources, so resolution is
+a single hop at any chain depth — no recursion, no graph walk. Combining rule (L5): drop
+null/empty/whitespace, trim, dedup, **sort**, join with `' / '`, `null` when nothing survives, no
+cap. Strictly derived and read-only (L2) — no form field, no override, no API input. Party lot stops
+at the beam (L11); `beamNumber` takes over, though composition rows still snapshot their sources'
+values. **No backfill** (L3) — the 16 historical JW-In yarn items stay `NULL` and render `—`.
+
+Shared **1.19.0**, then **1.19.1** after review found `combinePartyLots` was neither idempotent nor
+associative — re-combining an already-combined value (the third hop) would have duplicated tokens.
+
+### Commits
+
+| Repo | Workstream commits (after the release commit) | Shared version |
+|------|-----------------------------------------------|----------------|
+| `fabtraq-shared` | `92ee267` → `0b32006` (8) | 1.17.0 → 1.19.1, all published |
+| `fabtraq-be` | `505ba54` → `80f784e` (17) | consumes 1.19.1 from the registry |
+| `fabtraq-fe` | `da6e153` → `166a1cc` (7) | consumes 1.19.1 from the registry |
+| `e2e` | `76e35d0` → `102e37c` (6) | n/a |
+
+Two live-testing fixes also landed just **before** the release commit and are not covered by the
+release append above: the weaving-in weft-ceiling Save gate (`3404e18`) and the beam picker clearing
+its own selection while its list reloaded (`941d0e5`, `14370af`).
+
+### Verification status ᶜ
+
+Gates for these three workstreams were run **in their implementation sessions** and are asserted by
+the commit trail (BE branch-coverage gate closed by `903da79`/`27e5d65`; final-review gaps closed by
+`03bc381`; e2e specs added for the JW-Out refusal, the cancelled-parent queue exit, and party lot
+across two hops plus third-hop idempotency). They were **not re-run when this append was written**,
+so no test counts are quoted here — quoting carried-forward numbers as if measured is the failure
+mode this doc exists to prevent. Re-run the four repos' gates before the merge-to-`main` PR.
+
+### Backlog logged
+
+**B-029** dead `jw_challan_out_item` Place-Stock branch · **B-030** re-enter `JWO-2026-27-026`
+(likely moot — the row was destroyed when the e2e suite truncated `fabtraq_dev`; it survives only in
+`db-snapshots/fabtraq_dev-2026-08-20-pre-conservation-tests.sql`) · **B-031** JW-Out row's unit
+`<Select>` not pinned to the picked lot · **B-032** guard messages wrap one word per line in the
+~70px `Net Wt` cell · **B-033** Totals row renders `NaN` for blank Bags / Gross Wt.
+
+### Still outstanding
+
+Unchanged from the release append above: **B-028** first (it fails `fabtraq-fe` CI on every push
+today and blocks the merge PR everywhere), then **merge to `main`** — nothing has ever been merged
+in any repo — then **Sprint 7**.
