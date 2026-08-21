@@ -38,29 +38,62 @@ file proper design for later."
 
 **Origin:** 2026-05-19 S4 close-out (session `session-1779219341176`).
 Originally Sprint 4 §3.
-**Status:** Deferred (pushed from S4)
+**Status:** **PARTIALLY SHIPPED (2026-08-21).** Client-side
+`@react-pdf/renderer` PDF generation landed in `fabtraq-fe`
+`src/features/challan-print/` — spec
+`docs/specs/2026-08-21-challan-pdf-design.md`. Covers JW-Challan Out (T2) and
+both weaving-dispatch documents (beam-issue challan + the dispatch-minted weft
+delivery challan). **Remaining scope:** Yarn Purchase entry (T1), JW-Challan
+In (T3A/B/C), plus 4 detail/list pages that still carry the raw-UUID-fallback
+display pattern over non-hydrated schemas — `jw-challan-in-detail`,
+`beam-receipt-detail`, `beam-detail`, and the `place-stock-queue`/placements
+columns — which need a future `fabtraq-shared` hydration bump (denormalised
+display-name fields, same convention as the challan-print data-gap fields)
+before they can gain a print path.
 **Trigger to revisit:** before Phase 1 client UAT (S7), per user instruction
 L2626 "we need a consistent pdf before completing phase 1." If S7 ships
-without PDFs, this becomes blocker.
+without T1/T3 PDFs, this remains a blocker for those two surfaces.
 
-Today three transactional surfaces use `window.print()` stubs that produce
-inconsistent browser-default output:
+Today two transactional surfaces still use `window.print()` stubs (or no
+print path at all) that produce inconsistent browser-default output:
 
-1. Yarn Purchase entry (T1) — Sprint 2 detail page
-2. JW-Challan Out (T2) — Sprint 3 detail page (has `@media print` stylesheet)
+1. Yarn Purchase entry (T1) — Sprint 2 detail page, `window.print()`, no
+   print CSS
+2. ~~JW-Challan Out (T2)~~ — **shipped 2026-08-21**, see above
 3. JW-Challan In (T3A/B/C) — currently no print path at all
 
-**Proposal:** BE generates PDFs on-demand at `/yarn-purchases/:id/pdf`,
-`/jw-challans-out/:id/pdf`, `/jw-challans-in/:id/pdf`. Same renderer reused by
-Sprint 7 report PDFs.
+**Proposal (superseded for T2, still open for T1/T3):** originally BE
+generates PDFs on-demand at `/yarn-purchases/:id/pdf`,
+`/jw-challans-out/:id/pdf`, `/jw-challans-in/:id/pdf`. T2 instead shipped as
+client-side generation (`usePrintChallan` → `ChallanPdf`, opened as a `blob:`
+URL) — a deliberate departure from the original BE-endpoint proposal, ruled
+by the engine decision below. T1/T3 are expected to follow the same
+client-side pattern rather than the original BE-PDF proposal, but that is not
+yet locked.
 
-**Engine pick deferred to spec phase:** `wkhtmltopdf` (PRD's pick, binary
-toolchain, mature) vs `pdf-lib` (npm-only, more code) vs Puppeteer/Playwright
-(heavy). Decide when picking this up.
+**Engine pick — RESOLVED for the shipped scope (2026-08-21):**
+`@react-pdf/renderer`, client-side, lazy-loaded — see
+`docs/specs/2026-08-21-challan-pdf-design.md` §1. This is a recorded
+departure from PRD §868's `wkhtmltopdf` pick: wkhtmltopdf is unmaintained and
+the project has no server deploy target, so server-side generation was ruled
+out in favour of client-side. `pdf-lib` / Puppeteer were the other options
+considered and not chosen (see spec §1 for the full grounds). T1/T3 should
+default to the same engine unless a spec phase for them finds a reason not
+to.
 
-**Why deferred:** S5/S6 JW redesign is schema-breaking and time-critical
-while the wipe-and-rebuild migration window is open. PDF rendering is
-independent — can land in S6.5 (between S6 and S7) or fold into S7 itself.
+**Why originally deferred (T1/T3 still applies):** S5/S6 JW redesign was
+schema-breaking and time-critical while the wipe-and-rebuild migration window
+was open. PDF rendering was independent — the T2 slice landed post-S8 on
+2026-08-21; T1/T3 remain unscheduled.
+
+**Test coverage (shipped T2/dispatch scope):** the JW-Challan-Out "Print PDF"
+button is live-verified by e2e (`e2e/tests/flows/challan-pdf.spec.ts` —
+real click, real `blob:` PDF, print-time field hydration). The
+weaving-dispatch "Print Beam Issue" / "Print Weft Delivery" buttons are
+**not** independently live-e2e-verified — they're covered by FE integration
+tests (button presence/role-gating, `usePrintChallan`/`pdf-entry` mocked at
+the boundary) plus unit tests on the shared `challan-print` renderer/mappers/
+pagination that both document types route through.
 
 ---
 
