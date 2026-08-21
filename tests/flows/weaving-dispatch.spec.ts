@@ -231,15 +231,17 @@ test(
     expect(beamAfterDispatch!.issued_challan_no).toBeTruthy();
 
     // JWB is visible on screen (PageHeader title falls back to beamChallanNo
-    // first — weaving-dispatch-detail.page.tsx:127), so it can be captured
-    // from the DOM. JWO has no on-screen representation at all: both print
-    // blocks carry Tailwind's `hidden` class and only lift under `@media
-    // print` (weaving-dispatch-detail.page.tsx:104-116), which is the
-    // intended design (spec §4: "two print blocks... one Print button
-    // each"), not a bug — window.print()-gated content, not an accessible-
-    // name mismatch. Derive jwoNo from the DB via the dispatch's own FK
-    // instead, which is the stronger assertion anyway (proves the row is
-    // actually linked, not just that some text on the page matches a regex).
+    // first — weaving-dispatch-detail.page.tsx:87), so it can be captured
+    // from the DOM. JWO has no comparable on-screen document number: the
+    // page's own title only ever shows one challan number (beamChallanNo, or
+    // the weft challan's as a fallback), and challan-pdf now owns both
+    // documents entirely — "Beam Challan PDF"/"Weft Challan PDF" buttons
+    // (usePrintChallan -> ChallanPdf, opened as a blob: URL in a new tab; see
+    // challan-pdf.spec.ts) generate them client-side rather than a
+    // CSS-gated `@media print` block on this page. Derive jwoNo from the DB
+    // via the dispatch's own FK instead, which is the stronger assertion
+    // anyway (proves the row is actually linked, not just that some text on
+    // the page matches a regex).
     const jwbNo = await captureDocNo(page.getByRole('main'), /\bJWB-\d{4}-\d{2}-\d{3,}\b/);
     expect(beamAfterDispatch!.issued_challan_no).toBe(jwbNo);
 
@@ -256,10 +258,11 @@ test(
     expect(weftChallan!.challan_no).toMatch(/^JWO-\d{4}-\d{2}-\d{3,}$/);
 
     // Both sections rendered: the "Beams"/"Weft" h2 section headings are
-    // always visible on-screen (the dedicated print-only h1 headers
-    // "Job Work Beam Issue"/"Job Work Delivery Weft Purpose" carry a
-    // Tailwind `hidden` class that only lifts inside `@media print` — plan's
-    // [ASSUME] anchor on those would never pass outside an actual print).
+    // plain, always-visible on-screen headings for the line-item tables —
+    // no `hidden`/`@media print` gating on this page at all now that the PDF
+    // documents ("Job Work Beam Issue"/"Job Work Delivery Weft Purpose") are
+    // generated separately by challan-pdf (react-pdf, not this page's own
+    // print stylesheet).
     await expect(page.getByRole('heading', { name: 'Beams', level: 2 })).toBeVisible();
     await expect(page.getByRole('heading', { name: 'Weft', level: 2 })).toBeVisible();
 
