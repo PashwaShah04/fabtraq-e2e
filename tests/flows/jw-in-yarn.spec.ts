@@ -8,6 +8,7 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
 
 // JW Challan In (yarn) — PER-LOT SOURCES FORM (spec 2026-07-23, supersedes the
 // 2026-07-22 consolidated-form spec's Section B/allocator/Place-expander):
@@ -148,6 +149,7 @@ async function receiveLot(
   outChallanNo: string,
   floor: { loc_code: string; loc_name: string; floor_name: string },
   q: number,
+  place = true,
 ): Promise<void> {
   await gotoAndExpect(page, '/jw-challans-in/new');
   await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
@@ -168,6 +170,11 @@ async function receiveLot(
   await fillByLabel(page, 'Search OUT challan no', outChallanNo);
   const eligibleOption = page.getByRole('option', { name: outChallanNo });
   await expect(eligibleOption).toBeVisible();
+  // Source options identify by quality + SKU ("name — shadeNumber"), not lot
+  // number alone (shared 1.12.0: denormalized display fields on EligibleOutItem).
+  await expect(eligibleOption).toContainText(
+    `${src.lot_number} · ${src.quality_name} · ${skuLabelOf(src)}`,
+  );
   await eligibleOption.click();
   // Picking the source prefills Consumed with min(pendingAtJW, uncovered
   // need) — here pending == net == q, so no manual fill: the receipt below
@@ -181,10 +188,15 @@ async function receiveLot(
   // Place the full quantity via the always-visible Place-stock region (no
   // click-to-reveal expander anymore) so the minted lot is fully_placed and
   // immediately sourceable by a follow-up JW-Out.
-  await clickButton(page, 'Add placement');
-  await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
-  await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  // place=false leaves the receipt unplaced — the item must then surface in
+  // the /place-stock queue (placementStatus='pending'), NOT silently read as
+  // fully placed off the column default.
+  if (place) {
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
+    await selectByAriaLabel(page, 'Select floor', floor.floor_name);
+    await fillByLabel(page, 'placement quantity 1', String(q));
+  }
 
   await clickButton(page, 'Save receipt');
   await expectToast(page, /^Saved /);
@@ -218,9 +230,13 @@ test(
     );
     expect(receivingFloor, 'seed must provide a second active floor to receive into').not.toBeNull();
 
-    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
-
     // Two-sided delta, keyed exactly as applyChallanInYarnLedger writes them.
+    // Read BEFORE opening the position, not assumed zero: this job
+    // worker/lot key is deterministically "first eligible" and shared across
+    // this whole file (and possibly other spec files) — another test's
+    // undrained position can leave residual here, so only the DELTA this
+    // test's own open introduces is asserted, same scoping principle E3
+    // applied to stock-transfer.spec.ts's source query.
     const jwKey = {
       lotNumber: src!.lot_number,
       skuId: src!.sku_id,
@@ -233,9 +249,12 @@ test(
       skuId: src!.sku_id,
       floorId: receivingFloor!.floor_id,
     };
+    const jwBeforeOpen = await db.ledgerBalance(jwKey);
+
+    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
 
     const jwBefore = await db.ledgerBalance(jwKey);
-    expect(jwBefore).toBeCloseTo(Q, 3);
+    expect(jwBefore - jwBeforeOpen).toBeCloseTo(Q, 3);
     const floorBefore = await db.ledgerBalance(floorKey);
 
     await receiveLot(page, src!, outChallanNo, receivingFloor!, Q);
@@ -381,6 +400,26 @@ test(
     );
     expect(receivingFloor, 'seed must provide an active floor to receive into').not.toBeNull();
 
+    // Keyed exactly as applyChallanInYarnLedger writes them. Read BEFORE
+    // opening either position — see the two-sided-ledger-delta test above for
+    // why this key cannot be assumed to start at zero.
+    const jwKeyRed = {
+      lotNumber: srcRed!.lot_number,
+      skuId: srcRed!.sku_id,
+      qualityId: srcRed!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwKeyBlue = {
+      lotNumber: srcBlue!.lot_number,
+      skuId: srcBlue!.sku_id,
+      qualityId: srcBlue!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwRedBeforeOpen = await db.ledgerBalance(jwKeyRed);
+    const jwBlueBeforeOpen = await db.ledgerBalance(jwKeyBlue);
+
     const outNoRed = await openJwPosition(page, jobWorker!, srcRed!, 'Twisting', Q_RED);
     const outNoBlue = await openJwPosition(page, jobWorker!, srcBlue!, 'Twisting', Q_BLUE);
 
@@ -443,24 +482,10 @@ test(
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
     await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
 
-    const jwKeyRed = {
-      lotNumber: srcRed!.lot_number,
-      skuId: srcRed!.sku_id,
-      qualityId: srcRed!.quality_id,
-      floorId: null,
-      jobWorkerId: jobWorker!.id,
-    };
-    const jwKeyBlue = {
-      lotNumber: srcBlue!.lot_number,
-      skuId: srcBlue!.sku_id,
-      qualityId: srcBlue!.quality_id,
-      floorId: null,
-      jobWorkerId: jobWorker!.id,
-    };
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
-    expect(jwRedBefore).toBeCloseTo(Q_RED, 3);
-    expect(jwBlueBefore).toBeCloseTo(Q_BLUE, 3);
+    expect(jwRedBefore - jwRedBeforeOpen).toBeCloseTo(Q_RED, 3);
+    expect(jwBlueBefore - jwBlueBeforeOpen).toBeCloseTo(Q_BLUE, 3);
 
     await clickButton(page, 'Save receipt');
     await expectToast(page, /^Saved /);
@@ -504,5 +529,324 @@ test(
     const sourcesTable = page.getByTestId('sources-table');
     await expect(sourcesTable.getByText(outNoRed)).toBeVisible();
     await expect(sourcesTable.getByText(outNoBlue)).toBeVisible();
+  },
+);
+
+// E4 Test A (D2 prefill): when a lot's sources all agree on one real SKU, the
+// answer arrives without a manual pick (ReceivedLotsGrid.tsx SkuCell effect,
+// deriveAgreedSku). This is the ergonomic half of the spec and easy to ship
+// broken, because a prefill that silently fails just looks like a field the
+// user has to fill in — so this test deliberately never touches `sku,
+// lots.0` itself, reading only the trigger's rendered text and, after save,
+// the minted lot's own ledger row.
+test(
+  'JW-in prefills the lot SKU from a single agreeing source, and the floor-credit leg carries it without a manual pick',
+  async ({ page, db }) => {
+    const Q = 10;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
+
+    const receivingFloor = await db.queryOne<{
+      loc_code: string;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT l.code AS loc_code, l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM location_floors f JOIN locations l ON l.id = f.location_id
+       WHERE f.id <> $1 AND l.status = 'active' AND f.status = 'active'
+       ORDER BY f.id LIMIT 1`,
+      [src!.floor_id],
+    );
+    expect(receivingFloor, 'seed must provide a second active floor to receive into').not.toBeNull();
+
+    // Twisting deliberately — non-dyed. O4's dyed-lot rule (sentinel
+    // disabled on a dyed row) is E10's territory; a dyed source here would
+    // assert the opposite of what E10 pins.
+    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
+
+    await gotoAndExpect(page, '/jw-challans-in/new');
+    await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
+
+    // Quality and net weight only — `sku, lots.0` is left untouched on
+    // purpose so the prefill below is the only thing that can answer it.
+    await selectByAriaLabel(page, 'quality, lots.0', `${src!.quality_code} – ${src!.quality_name}`);
+    await fillByLabel(page, 'net weight, lots.0', String(Q));
+
+    await page.getByLabel('add source, lots.0').click();
+    await page.getByLabel('source, lots.0.sources.0', { exact: true }).click();
+    await fillByLabel(page, 'Search OUT challan no', outChallanNo);
+    const eligibleOption = page.getByRole('option', { name: outChallanNo });
+    await expect(eligibleOption).toBeVisible();
+    await eligibleOption.click();
+    await expect(page.getByLabel('consumed quantity, lots.0.sources.0')).toHaveValue(String(Q));
+
+    // D2 prefill: the lone active source agrees with itself, so the SKU
+    // answer arrives on its own. Read the trigger's rendered text rather
+    // than selecting it.
+    await expect(page.locator('[aria-label="sku, lots.0"]')).toHaveText(skuLabelOf(src!));
+
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select location',
+      `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
+    );
+    await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
+    await fillByLabel(page, 'placement quantity 1', String(Q));
+
+    const floorKey = {
+      qualityId: src!.quality_id,
+      skuId: src!.sku_id,
+      floorId: receivingFloor!.floor_id,
+    };
+    const floorBefore = await db.ledgerBalance(floorKey);
+
+    // Save WITHOUT ever setting the SKU manually — if the prefill only
+    // painted the UI without reaching form state, this submit would be
+    // blocked by the answer-required gate.
+    await clickButton(page, 'Save receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-in\/[^/]+$/);
+
+    const floorAfter = await db.ledgerBalance(floorKey);
+    expect(floorAfter - floorBefore).toBeCloseTo(Q, 3);
+
+    // Precise oracle: the minted lot's own floor-credit row carries the
+    // agreed SKU, not null — the failure mode worth catching is a prefill
+    // that reaches the payload as the WRONG id, which the delta above
+    // wouldn't distinguish from a correct save.
+    const challanId = page.url().split('/').pop();
+    const mintedLotRow = await db.queryOne<{ lot_no: string }>(
+      `SELECT lot_no FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [challanId],
+    );
+    expect(mintedLotRow, 'the JW-in must mint exactly one yarn item row').not.toBeNull();
+    const ledgerRow = await db.queryOne<{ sku_id: string | null }>(
+      `SELECT sku_id FROM stock_ledger WHERE lot_number = $1 AND floor_id = $2 ORDER BY created_at DESC LIMIT 1`,
+      [mintedLotRow!.lot_no, receivingFloor!.floor_id],
+    );
+    expect(ledgerRow, 'the minted lot must carry a floor-credit stock_ledger row').not.toBeNull();
+    expect(ledgerRow!.sku_id).toBe(src!.sku_id);
+  },
+);
+
+// E4 Test B (D2 row 2): sources that stop agreeing force an explicit answer.
+// Same RED/BLUE-under-QTY-001 setup as the cross-SKU test above, but here the
+// received lot is never given a manual SKU — the point is that an
+// auto-prefill from RED alone must CLEAR back to unanswered once the
+// disagreeing BLUE source joins (fixed in fe@6a4cbaa: SkuCell's `autoSetRef`
+// now tells its own auto-set write apart from a user pick or the sentinel,
+// so only ITS OWN write gets cleared on disagreement).
+test(
+  'JW-in disagreeing sources clear a stale prefill and force an explicit SKU answer; the sentinel completes the receipt',
+  async ({ page, db }) => {
+    const Q_RED = 6;
+    const Q_BLUE = 5;
+    const Q_TOTAL = Q_RED + Q_BLUE;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    const quality = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM yarn_qualities WHERE code = 'QTY-001'`,
+    );
+    expect(
+      quality,
+      'seed must provide QTY-001 — the one quality carrying two SKUs (RED/BLUE)',
+    ).not.toBeNull();
+
+    const srcRed = await db.queryOne<SourceLotRow>(RAW_LOT_FOR_SKU_SQL, ['SKU-001', Q_RED]);
+    expect(srcRed, 'seed must provide a raw SKU-001 (RED) lot with sufficient balance').not.toBeNull();
+    const srcBlue = await db.queryOne<SourceLotRow>(RAW_LOT_FOR_SKU_SQL, ['SKU-002', Q_BLUE]);
+    expect(srcBlue, 'seed must provide a raw SKU-002 (BLUE) lot with sufficient balance').not.toBeNull();
+
+    const receivingFloor = await db.queryOne<{
+      loc_code: string;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT l.code AS loc_code, l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM location_floors f JOIN locations l ON l.id = f.location_id
+       WHERE l.status = 'active' AND f.status = 'active'
+       ORDER BY f.id LIMIT 1`,
+    );
+    expect(receivingFloor, 'seed must provide an active floor to receive into').not.toBeNull();
+
+    // Keyed exactly as applyChallanInYarnLedger writes them. Read BEFORE
+    // opening either position — see the two-sided-ledger-delta test above for
+    // why this key cannot be assumed to start at zero.
+    const jwKeyRed = {
+      lotNumber: srcRed!.lot_number,
+      skuId: srcRed!.sku_id,
+      qualityId: srcRed!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwKeyBlue = {
+      lotNumber: srcBlue!.lot_number,
+      skuId: srcBlue!.sku_id,
+      qualityId: srcBlue!.quality_id,
+      floorId: null,
+      jobWorkerId: jobWorker!.id,
+    };
+    const jwRedBeforeOpen = await db.ledgerBalance(jwKeyRed);
+    const jwBlueBeforeOpen = await db.ledgerBalance(jwKeyBlue);
+
+    const outNoRed = await openJwPosition(page, jobWorker!, srcRed!, 'Twisting', Q_RED);
+    const outNoBlue = await openJwPosition(page, jobWorker!, srcBlue!, 'Twisting', Q_BLUE);
+
+    await gotoAndExpect(page, '/jw-challans-in/new');
+    await expect(page.getByRole('heading', { name: 'New Job Work Challan In' })).toBeVisible();
+
+    // Quality + net weight only — `sku, lots.0` is deliberately left
+    // untouched; only the prefill effect and, later, an explicit pick may
+    // set it.
+    await selectByAriaLabel(page, 'quality, lots.0', `${quality!.code} – ${quality!.name}`);
+    await fillByLabel(page, 'net weight, lots.0', String(Q_TOTAL));
+
+    // Source row 1 — RED alone agrees with itself: auto-prefilled.
+    await page.getByLabel('add source, lots.0').click();
+    await page.getByLabel('source, lots.0.sources.0', { exact: true }).click();
+    await fillByLabel(page, 'Search OUT challan no', outNoRed);
+    const redOption = page.getByRole('option', { name: outNoRed });
+    await expect(redOption).toBeVisible();
+    await redOption.click();
+    await expect(page.getByLabel('consumed quantity, lots.0.sources.0')).toHaveValue(String(Q_RED));
+    await expect(page.locator('[aria-label="sku, lots.0"]')).toHaveText(skuLabelOf(srcRed!));
+
+    // Source row 2 — BLUE disagrees. The stale RED prefill must clear back
+    // to unanswered rather than silently keep RED (the app-vs-plan mismatch
+    // fixed in fe@6a4cbaa).
+    await page.getByLabel('add source, lots.0').click();
+    await page.getByLabel('source, lots.0.sources.1', { exact: true }).click();
+    await fillByLabel(page, 'Search OUT challan no', outNoBlue);
+    const blueOption = page.getByRole('option', { name: outNoBlue });
+    await expect(blueOption).toBeVisible();
+    await blueOption.click();
+    await expect(page.getByLabel('consumed quantity, lots.0.sources.1')).toHaveValue(String(Q_BLUE));
+    await expect(page.locator('[aria-label="sku, lots.0"]')).toHaveText('Select SKU…');
+
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select location',
+      `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
+    );
+    await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
+    await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
+
+    const jwRedBefore = await db.ledgerBalance(jwKeyRed);
+    const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
+    expect(jwRedBefore - jwRedBeforeOpen).toBeCloseTo(Q_RED, 3);
+    expect(jwBlueBefore - jwBlueBeforeOpen).toBeCloseTo(Q_BLUE, 3);
+
+    // Attempt to save with the SKU unanswered: blocked, zero delta on both
+    // at-JW positions, no redirect.
+    await clickButton(page, 'Save receipt');
+    await expect(page.getByText(SKU_ANSWER_REQUIRED).first()).toBeVisible();
+    await expect(page).toHaveURL(/\/jw-challans-in\/new$/);
+
+    const jwRedAfterBlock = await db.ledgerBalance(jwKeyRed);
+    const jwBlueAfterBlock = await db.ledgerBalance(jwKeyBlue);
+    expect(jwRedAfterBlock - jwRedBefore).toBe(0);
+    expect(jwBlueAfterBlock - jwBlueBefore).toBe(0);
+
+    // Answer with the sentinel — not a third real SKU, which the cross-SKU
+    // test above already covers — and save. A SKU-less receipt consuming
+    // two SKU'd sources is exactly the combination D2's mapper is meant to
+    // allow.
+    //
+    // (An alternative, UI-reachable way to force the field back to
+    // unanswered exists — switching `lots.0.qualityId` away and back also
+    // clears `skuId` unconditionally, since QualityCell's onValueChange
+    // does `setValue(skuId, undefined)` regardless of source agreement, and
+    // the two already-attached sources survive the round-trip untouched.
+    // Not used here: it isn't the flow this spec (or D2) documents, and the
+    // fix above makes the documented flow directly reachable, so a
+    // work-around gesture would only obscure what's actually being tested.)
+    await selectByAriaLabel(page, 'sku, lots.0', SENTINEL_OPTION_LABEL);
+
+    await clickButton(page, 'Save receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-in\/[^/]+$/);
+
+    const jwRedAfter = await db.ledgerBalance(jwKeyRed);
+    const jwBlueAfter = await db.ledgerBalance(jwKeyBlue);
+    expect(jwRedAfter - jwRedBefore).toBeCloseTo(-Q_RED, 3);
+    expect(jwBlueAfter - jwBlueBefore).toBeCloseTo(-Q_BLUE, 3);
+
+    // Ledger oracle: the minted lot's floor-credit row is sku_id IS NULL —
+    // a SKU-less receipt, not a phantom real-SKU one.
+    const challanId = page.url().split('/').pop();
+    const mintedLotRow = await db.queryOne<{ lot_no: string }>(
+      `SELECT lot_no FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [challanId],
+    );
+    expect(mintedLotRow, 'the JW-in must mint exactly one yarn item row').not.toBeNull();
+    const ledgerRow = await db.queryOne<{ sku_id: string | null; in_quantity: string }>(
+      `SELECT sku_id, in_quantity FROM stock_ledger WHERE lot_number = $1 AND floor_id = $2
+       ORDER BY created_at DESC LIMIT 1`,
+      [mintedLotRow!.lot_no, receivingFloor!.floor_id],
+    );
+    expect(ledgerRow, 'the minted lot must carry a floor-credit stock_ledger row').not.toBeNull();
+    expect(ledgerRow!.sku_id).toBeNull();
+    expect(Number(ledgerRow!.in_quantity)).toBeCloseTo(Q_TOTAL, 3);
+  },
+);
+
+test(
+  'a JW-In receipt saved without placements lands in the place-stock queue as pending',
+  async ({ page, db }) => {
+    const Q = 10;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
+
+    const receivingFloor = await db.queryOne<{
+      loc_code: string;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT l.code AS loc_code, l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM location_floors f JOIN locations l ON l.id = f.location_id
+       WHERE f.id <> $1 AND l.status = 'active' AND f.status = 'active'
+       ORDER BY f.id LIMIT 1`,
+      [src!.floor_id],
+    );
+    expect(receivingFloor, 'seed must provide a second active floor').not.toBeNull();
+
+    const outChallanNo = await openJwPosition(page, jobWorker!, src!, 'Twisting', Q);
+    await receiveLot(page, src!, outChallanNo, receivingFloor!, Q, false);
+
+    const challanId = page.url().split('/').pop();
+    const item = await db.queryOne<{ id: string; lot_no: string; placement_status: string }>(
+      `SELECT id, lot_no, placement_status FROM jw_challan_in_yarn_item WHERE challan_in_id = $1`,
+      [challanId],
+    );
+    expect(item, 'the created receipt must have exactly one yarn item').not.toBeNull();
+    expect(item!.placement_status).toBe('pending');
+
+    await gotoAndExpect(page, '/place-stock');
+    await expect(page.getByRole('row', { name: item!.lot_no })).toBeVisible();
+    await page.getByRole('row', { name: item!.lot_no }).click();
+    await expect(page).toHaveURL(
+      new RegExp(`/place-stock/jw_challan_in_yarn_item/${item!.id}$`),
+    );
   },
 );

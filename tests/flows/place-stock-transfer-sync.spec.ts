@@ -511,3 +511,113 @@ test(
     expect(Number(floorRowCount?.n ?? '0')).toBe(3);
   },
 );
+
+// ---------------------------------------------------------------------------
+// Edit-path PLACEMENT_OVERFLOW guard (found live 2026-07-24): editing a
+// placement ABOVE the item total used to be stored verbatim — a 50→150 edit
+// on a 100 KG item wrote a +100 move-pair out of the awaiting bucket,
+// driving it to −50 while the floor showed 150. createPlacements always had
+// the Σ ≤ item-quantity ceiling; updatePlacement (and the FE edit row) did
+// not. This test pins both layers: the FE rejects with an inline field error
+// and never fires the PATCH, and stock_ledger stays byte-for-byte balanced.
+// ---------------------------------------------------------------------------
+
+test(
+  'editing a placement above the item total is rejected with a field error and leaves placements + stock_ledger untouched',
+  async ({ page, db }) => {
+    const Q = 120;
+    const OVER = Q + 30;
+
+    const vendor = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM vendors WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(vendor, 'seed must provide at least one active vendor').not.toBeNull();
+    const quality = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM yarn_qualities WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(quality, 'seed must provide at least one active yarn quality').not.toBeNull();
+    const sku = await db.queryOne<{ id: string; name: string; shade_number: string | null }>(
+      `SELECT id, name, shade_number FROM yarn_skus
+       WHERE status = 'active' AND quality_id = $1 ORDER BY code LIMIT 1`,
+      [quality!.id],
+    );
+    expect(sku, 'seed must provide at least one active SKU for the chosen quality').not.toBeNull();
+    const location = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM locations WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(location, 'seed must provide at least one active location').not.toBeNull();
+    const floor = await db.queryOne<{ id: string; name: string }>(
+      `SELECT id, name FROM location_floors WHERE status = 'active' AND location_id = $1
+       ORDER BY name LIMIT 1`,
+      [location!.id],
+    );
+    expect(floor, 'seed must provide at least one active floor for the chosen location').not.toBeNull();
+
+    // Purchase Q unplaced, then place ALL of it (same drive as the B-013 test).
+    await gotoAndExpect(page, '/yarn-purchases/new');
+    await selectByAriaLabel(page, 'Select vendor', `${vendor!.code} – ${vendor!.name}`);
+    await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
+    const skuOptionLabel =
+      sku!.shade_number !== null && sku!.shade_number !== '' ? `${sku!.name} — ${sku!.shade_number}` : sku!.name;
+    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await fillByLabel(page, 'Quantity for line 1', String(Q));
+    await clickButton(page, 'Save purchase');
+    await expectToast(page, /^Saved /);
+    const purchaseId = page.url().split('/').pop();
+
+    const item = await db.queryOne<{ id: string; lot_number: string }>(
+      `SELECT id, lot_number FROM yarn_purchase_items WHERE purchase_id = $1`,
+      [purchaseId],
+    );
+    expect(item, 'the created purchase must have exactly one item').not.toBeNull();
+
+    await gotoAndExpect(page, '/place-stock');
+    await page.getByRole('row', { name: item!.lot_number }).click();
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
+    await selectByAriaLabel(page, 'Select floor', floor!.name);
+    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await clickButton(page, 'Save Placements');
+    await expectToast(page, 'Stock placed successfully');
+
+    const placement = await db.queryOne<{ id: string }>(
+      `SELECT id FROM placements WHERE source_type = 'yarn_purchase_item' AND source_item_id = $1`,
+      [item!.id],
+    );
+    expect(placement, 'must have exactly one placement row for this item').not.toBeNull();
+
+    const ledgerCountBefore = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM stock_ledger WHERE lot_number = $1`,
+      [item!.lot_number],
+    );
+
+    // Attempt the over-edit in the editor.
+    await gotoAndExpect(page, `/place-stock/yarn_purchase_item/${item!.id}`);
+    const row = page.locator('[aria-label="existing unlocked placement"]');
+    await expect(row).toBeVisible();
+    const qtyInput = row.locator(`[aria-label="existing placement quantity ${placement!.id}"]`);
+    await qtyInput.fill(String(OVER));
+
+    let patchFired = false;
+    page.on('request', (req) => {
+      if (req.method() === 'PATCH' && req.url().includes('/placements/')) patchFired = true;
+    });
+    await row.getByRole('button', { name: 'Save', exact: true }).click();
+
+    // Inline field error, exact ceiling in the message; no PATCH left the page.
+    await expect(row.getByText(`Exceeds the item total — max ${Q.toFixed(3)} KG.`)).toBeVisible();
+    expect(patchFired).toBe(false);
+
+    // DB untouched: placement still Q, not a single new ledger row.
+    const rowAfter = await db.queryOne<{ quantity: string }>(
+      `SELECT quantity::text FROM placements WHERE id = $1`,
+      [placement!.id],
+    );
+    expect(Number(rowAfter?.quantity ?? '0')).toBeCloseTo(Q, 3);
+    const ledgerCountAfter = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM stock_ledger WHERE lot_number = $1`,
+      [item!.lot_number],
+    );
+    expect(ledgerCountAfter?.n).toBe(ledgerCountBefore?.n);
+  },
+);

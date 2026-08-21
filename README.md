@@ -51,20 +51,24 @@ To run a single spec: `npm run e2e -- tests/flows/stock-transfer.spec.ts`.
    `npm run e2e` handles this for you — only relevant if you're launching the
    BE dev server some other way for manual/partial runs.
 
-## Companion-repo branch requirement
+## Running from a worktree
 
-The suite tests whatever `../fabtraq-be` and `../fabtraq-fe` have **checked out**.
-Two fixes the suite depends on currently live on their own branches (not yet on
-the feature branches):
+The suite defaults to `../fabtraq-be` / `../fabtraq-fe` (the original checkout
+layout). A worktree checkout (e.g. `worktrees/<name>/e2e`) sits next to
+sibling worktrees instead, so point the suite at those with `E2E_BE_DIR` /
+`E2E_FE_DIR` — both `playwright.config.ts`'s `webServer` commands and the
+`e2e` script's reseed step honor them:
 
-- **`fabtraq-be` → `fix/seed-design-code`** — corrects a seed fixture (`DSG-001`→`DSN-001`)
-  without which `GET /designs` 400s and `masters/designs.spec.ts` fails.
-- **`fabtraq-fe` → `fix/placement-fieldarray-overflow`** — the placement
-  Location/Floor layout fix, without which placement-driven flows fail at the
-  default 1280×720 viewport.
+```bash
+# full run (RESEEDS fabtraq_dev)
+E2E_BE_DIR=../be E2E_FE_DIR=../fe npm run e2e
 
-Check those out before running, or those specs will fail. (They are isolated fix
-branches intended to be cherry-picked to `main`.)
+# single spec (does NOT reseed; dev servers must be stopped first)
+E2E_BE_DIR=../be E2E_FE_DIR=../fe npx playwright test tests/flows/<spec>.spec.ts --project=authed
+```
+
+Omit both vars to fall back to the default `../fabtraq-be` / `../fabtraq-fe`
+layout.
 
 ## Design & conventions
 
@@ -108,14 +112,36 @@ The suite found these against the live stack:
    400'd for every user. **Fixed** on `fabtraq-be fix/seed-design-code`.
 2. **Placement Location/Floor selects** unclickable ≤~1366px viewports
    (`minmax(0,1fr)` collapse). **Fixed** on `fabtraq-fe fix/placement-fieldarray-overflow`.
-3. **`/place-stock` never writes `stock_ledger`** — `addPlacements`/`mintPlacements`
-   update `placements`/`placementStatus` but write no ledger row, even on the
-   `fully_placed` transition, so queue-placed stock is invisible to inventory.
-   **Open** — `tests/flows/placement.spec.ts` documents it with a `test.fail()`
-   tripwire that will flag when the BE is fixed.
+3. **`/place-stock` never wrote `stock_ledger`** — `addPlacements`/`mintPlacements`
+   updated `placements`/`placementStatus` but wrote no ledger row, even on the
+   `fully_placed` transition, so queue-placed stock was invisible to inventory.
+   **Fixed** (2026-07-10, see the unplaced-stock-visibility design) —
+   `tests/flows/placement.spec.ts` asserts the create-time bucket credit and
+   the placement move-pair directly.
 4. **quality-form** Category/Default-Unit/Status selects have no accessible name
    (`FormControl` wraps the `Select` root, not `SelectTrigger`). **Open.**
 5. **jw-challan-out** nested `<label>` wraps the job-work-type checkbox group,
    making non-first options' accessible names ambiguous. **Open.**
-6. **inventory-balance** Quality/Location filter Selects fire two clobbering
-   `setSearchParams` calls, so the filter never reaches the URL. **Open.**
+6. **inventory-balance** Quality/Location filter Selects fired two clobbering
+   `setSearchParams` calls, so the filter never reached the URL. **Superseded** —
+   the B-015 redesign (2026-07-22) replaced that page; the new overview has no
+   location filter at all (see `tests/flows/inventory.spec.ts`).
+7. **`prisma-inventory.repository.ts` position balances overstate stock that
+   has since had a DEBIT transaction** (`out_quantity > 0`, e.g. `challan_out`) —
+   verified live: one position summed 250 (purchase) − 80 − 60 (two
+   `challan_out` rows) = 110kg in `stock_ledger`, confirmed via a direct
+   Prisma query returning all three rows correctly, yet `GET /inventory`
+   (and therefore `/inventory/summary` and `/inventory/positions`, which
+   read the same `fetchPositions` accumulation) consistently returned 250kg
+   for that same position — the debit is silently dropped somewhere in
+   `fetchPositions`'s per-row `balanceGroupKey` accumulation, not in the
+   Prisma fetch itself. A second case showed the same pattern across
+   multiple `processedTypes` states sharing one floor (144kg overstated on
+   one floor: BE reported 2645/47/41/165kg vs a 2545/3/41/165kg direct
+   ledger sum for the raw/twisting/twisting+gassing/dyeing states). Predates
+   and is independent of B-015 (the position-level `/inventory` endpoint
+   wasn't touched by the redesign) — a real, business-critical
+   stock-balance correctness bug. **Open** —
+   `tests/flows/inventory.spec.ts`'s candidate selection deliberately avoids
+   stock items with in-house debit history so this spec exercises
+   unaffected data instead of tripping over it.

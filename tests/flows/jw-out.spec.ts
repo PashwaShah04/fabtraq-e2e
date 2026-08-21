@@ -7,6 +7,7 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { createSentinelPurchase } from '../../support/sentinel-purchase';
 
 // JW Challan Out moves stock OUT of a floor position and INTO an at-job-worker
 // position (jw-challan-out.service.ts `applyChallanOutLedger` writes two ledger
@@ -164,5 +165,105 @@ test(
     await expect(
       page.getByRole('heading', { name: `Job Work Challan Out ${challanNo}` }),
     ).toBeVisible();
+  },
+);
+
+// Regression for JWO-2026-27-026: a user once saved a JW-Out dispatching 100 kg
+// from a lot holding only 50 kg, and it silently wrote zero stock-ledger rows.
+// A JW-Out item's placements are the floors stock is PULLED FROM, so they must
+// account for the whole net weight (createJwChallanOutItemSchema's superRefine,
+// fabtraq-shared jw-challan-out.ts) — an unallocated remainder has no
+// awaiting-placement bucket to land in the way inbound items do.
+//
+// Own fixture (not "the first active lot"): createSentinelPurchase mints a
+// dedicated, SKU-less lot through the real purchase flow, so its balance is
+// exactly the quantity requested and unaffected by any other spec's state.
+test(
+  'refuses a JW-Out whose net weight is not fully allocated to the source lot',
+  async ({ page, db }) => {
+    const sentinel = await createSentinelPurchase(page, db, 50);
+
+    // createSentinelPurchase returns no quality name — resolve it the way the
+    // happy-path test above does, from the id it does return.
+    const quality = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM yarn_qualities WHERE id = $1`,
+      [sentinel.qualityId],
+    );
+    expect(quality, 'sentinel purchase must reference a real quality').not.toBeNull();
+
+    const jobWorker = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    // Baseline: the sentinel lot's only ledger row is its own purchase credit,
+    // and it has never been referenced by a JW-Out item.
+    const ledgerBefore = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM stock_ledger WHERE lot_number = $1`,
+      [sentinel.lotNumber],
+    );
+    const itemsBefore = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM jw_challan_out_items WHERE lot_number = $1`,
+      [sentinel.lotNumber],
+    );
+
+    await gotoAndExpect(page, '/jw-challans-out/new');
+    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+
+    // Operations must be picked before SourceLotPicker enables (it's gated on
+    // both jobWorkTypes AND quality — see the happy-path test's note above).
+    await page.getByLabel('Twisting').check();
+    await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
+    await selectByAriaLabel(page, 'Source lot for line 1', sentinel.lotNumber);
+
+    // Ask for 100 from a lot holding only 50 — the exact shape of the bug.
+    await fillByLabel(page, 'Net weight for line 1', '100');
+
+    // Check 1 (display-only, ChallanOutLineItemRow's overLotBalance guard):
+    // fires immediately from the picked lot's own floor balances, before any
+    // placement row exists. formatBalance renders KG to 3 decimals.
+    await expect(page.getByText(/only 50\.000 KG available in this lot/i)).toBeVisible();
+
+    // Allocate everything the lot actually holds — the item still doesn't
+    // conserve (50 placed against a 100 ask).
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select floor and location',
+      `${sentinel.location.name} · ${sentinel.floor.name}`,
+    );
+    await fillByLabel(page, 'placement quantity 1', '50');
+
+    await clickButton(page, 'Save challan');
+
+    // Still blocked. The over-balance message keeps rendering (both it and the
+    // schema's conservation message target the same `netWeight` field, and the
+    // component prefers the over-balance one), but the resolver still fails the
+    // whole submit either way — no toast, no navigation, no mutation is sent.
+    await expect(page.getByText(/only 50\.000 KG available in this lot/i)).toBeVisible();
+    await expect(page).toHaveURL(/\/jw-challans-out\/new/);
+
+    // Drop the ask to within the lot's balance but still short of what's
+    // placed, to observe the schema's own conservation message (check 2) on
+    // its own — it can't win the render race above while netWeight exceeds
+    // the lot balance, since the over-balance message takes priority.
+    await fillByLabel(page, 'Net weight for line 1', '30');
+    await clickButton(page, 'Save challan');
+
+    await expect(page.getByText(/add up to the net weight/i)).toBeVisible();
+    await expect(page).toHaveURL(/\/jw-challans-out\/new/);
+
+    // The actual defect this suite exists to catch: confirm nothing was ever
+    // written, not just that the UI complained.
+    const ledgerAfter = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM stock_ledger WHERE lot_number = $1`,
+      [sentinel.lotNumber],
+    );
+    const itemsAfter = await db.queryOne<{ n: string }>(
+      `SELECT COUNT(*)::text AS n FROM jw_challan_out_items WHERE lot_number = $1`,
+      [sentinel.lotNumber],
+    );
+    expect(itemsAfter?.n).toBe(itemsBefore?.n);
+    expect(ledgerAfter?.n).toBe(ledgerBefore?.n);
   },
 );

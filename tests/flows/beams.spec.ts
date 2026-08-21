@@ -17,11 +17,18 @@ import { gotoAndExpect } from '../../support/nav';
 // correct if the seed data changes, and does not assert a minted document number
 // (beamNumber here is a fixed seed fixture, not an FY sequence counter).
 test('beam register lists a received beam and its detail renders', async ({ page, db }) => {
-  const seededBeam = await db.queryOne<{ id: string; beam_number: string; status: string }>(
-    `SELECT id, beam_number, status
-     FROM beams
-     WHERE status = 'received'
-     ORDER BY created_at ASC
+  const seededBeam = await db.queryOne<{
+    id: string;
+    beam_number: string;
+    status: string;
+    receipt_entry_no: string;
+  }>(
+    `SELECT b.id, b.beam_number, b.status, br.entry_no AS receipt_entry_no
+     FROM beams b
+     JOIN beam_receipt_items bri ON bri.id = b.beam_receipt_item_id
+     JOIN beam_receipts br ON br.id = bri.beam_receipt_id
+     WHERE b.status = 'received'
+     ORDER BY b.created_at ASC
      LIMIT 1`,
   );
   expect(seededBeam, 'seed must provide at least one received beam (Scenario 4)').not.toBeNull();
@@ -40,9 +47,10 @@ test('beam register lists a received beam and its detail renders', async ({ page
   // Status badge cell renders the human label (columns.tsx STATUS_LABEL.received).
   await expect(row.getByText('Received')).toBeVisible();
 
-  // DETAIL — row's Actions cell renders a "View" link to /beams/:id
-  // (columns.tsx: <Link to={`/beams/${row.original.id}`}>View</Link>).
-  await row.getByRole('link', { name: 'View' }).click();
+  // DETAIL — the whole row is clickable (spec 2026-07-30); the View link stays
+  // as the keyboard/a11y path. Navigate by clicking a data cell, not the link.
+  await expect(row.getByRole('link', { name: 'View' })).toBeVisible();
+  await row.getByText(seededBeam!.beam_number, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/beams/${seededBeam!.id}$`));
 
   // Detail page renders the beam's key fields (beam-detail.page.tsx): heading
@@ -52,4 +60,11 @@ test('beam register lists a received beam and its detail renders', async ({ page
   ).toBeVisible();
   await expect(page.getByText(seededBeam!.beam_number, { exact: true })).toBeVisible();
   await expect(page.getByText('Received', { exact: true })).toBeVisible();
+
+  // Provenance section (spec 2026-07-30): the receipt entry-no renders as a
+  // link to the receipt page — present for every beam (FK is required).
+  await expect(page.getByText('Provenance')).toBeVisible();
+  await expect(
+    page.getByRole('link', { name: seededBeam!.receipt_entry_no }),
+  ).toBeVisible();
 });

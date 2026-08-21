@@ -26,9 +26,14 @@ const ROUTES = [
   '/beams',
   '/inventory',
   '/inventory/lots',
+  '/inventory/positions',
   '/place-stock',
   '/stock-transfers',
   '/audit-log',
+  '/weaving-dispatches',
+  '/fabric-designs',
+  '/weaving-ins',
+  '/fabric-takas',
 ] as const;
 
 for (const route of ROUTES) {

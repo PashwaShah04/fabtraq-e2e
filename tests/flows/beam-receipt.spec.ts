@@ -1,5 +1,6 @@
 import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
+import { SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel,
@@ -8,6 +9,7 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { createSentinelPurchase } from '../../support/sentinel-purchase';
 
 // Beam Receipt — in_house origin (BR-S1/BR-S7/B-010). Of the three beamOrigin
 // paths (purchase / in_house / sizing_jw), only in_house drains real stock:
@@ -133,7 +135,17 @@ test(
     // a stable substring regardless of exact SKU-label formatting
     // (StockPullTable.tsx / yarn-key.ts's `qualifiedYarnLabel`).
     await clickButton(page, `add pull for ${src!.quality_code}`);
-    await selectByAriaLabel(page, 'pull lot, pulls.0', src!.lot_number);
+
+    // Canonical lot vocabulary (spec 2026-07-27): the pull picker's options
+    // must carry the processed state — "LOT · balance KG · Raw" for this raw
+    // seed lot — exactly like the JW pickers. Open the dropdown, assert the
+    // full label shape, then pick (selectByAriaLabel would reopen it, so
+    // drive the two steps manually here).
+    await page.locator('[aria-label="pull lot, pulls.0"]').click();
+    const pullLotOption = page.getByRole('option', { name: src!.lot_number });
+    await expect(pullLotOption).toContainText(/· \d+\.\d{3} KG · Raw$/);
+    await pullLotOption.click();
+
     await selectByAriaLabel(
       page,
       'pull floor, pulls.0',
@@ -375,7 +387,6 @@ test(
           {
             qualityId: src!.quality_id,
             skuId: src!.sku_id,
-            processedTypes: ['warping'],
             netWeight: Q_WARP,
             unit: 'KG',
             sources: [
@@ -384,7 +395,13 @@ test(
                 consumedQty: Q_WARP,
                 wastage: 0,
                 stillAtJwQty: 0,
-                completions: [],
+                // D2 (spec 2026-07-22): processedTypes is DERIVED server-side —
+                // union of source priors ∪ completed=true completions — and no
+                // longer accepted on the item. The warped state must therefore
+                // arrive via this completion; an empty completions array mints
+                // the lot with processed_types = {} and the sizing OUT picker
+                // silently excludes it (needs 'warping' present).
+                completions: [{ jobWorkType: 'warping', completed: true }],
               },
             ],
             placements: [
@@ -602,3 +619,348 @@ test(
     expect(finalStatusB!.status).toBe('sent');
   },
 );
+
+// E5 (spec 2026-07-27 D2a) — the per-beam yarn row's SKU answer is REQUIRED
+// (a real SKU or the "No shade / greige" sentinel), enforced by a per-row
+// `beamReceiptYarnInputSchema.safeParse` inside `validateInHouseComposition`
+// (FE plan Task 6/F3) — a client-side gate, same shape as yarn-purchase's.
+//
+// E5 Test A — leaving the SKU unanswered blocks the save. Section B derives
+// its "needed" total from this same yarn row regardless of the SKU answer, so
+// with zero pull rows entered, rule 5's exact-coverage check ALSO fires on the
+// same click — assert both messages, since asserting only one would tolerate
+// the form regressing to accept either failure alone as "the" error.
+test(
+  'in_house beam receipt blocks a yarn row with no SKU answer',
+  async ({ page, db }) => {
+    const Q = 8;
+
+    // A real floor-held lot — used only to prove the block is real (zero
+    // ledger delta), not to fill the form (which never reaches Section B's
+    // pull table here).
+    const src = await db.queryOne<{
+      quality_id: string;
+      quality_code: string;
+      quality_name: string;
+      lot_number: string;
+      loc_id: string;
+      floor_id: string;
+    }>(
+      `SELECT s.quality_id, q.code AS quality_code, q.name AS quality_name,
+              s.lot_number, l.id AS loc_id, f.id AS floor_id
+       FROM stock_ledger s
+       JOIN location_floors f ON f.id = s.floor_id
+       JOIN locations l ON l.id = f.location_id
+       JOIN yarn_qualities q ON q.id = s.quality_id
+       WHERE s.lot_number IS NOT NULL AND s.sku_id IS NOT NULL AND s.job_worker_id IS NULL
+         AND l.status = 'active' AND f.status = 'active' AND q.status = 'active'
+       GROUP BY s.quality_id, q.code, q.name, s.lot_number, l.id, f.id
+       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
+       ORDER BY s.lot_number
+       LIMIT 1`,
+      [Q],
+    );
+    expect(src, 'seed must provide a floor-held yarn lot with >= Q balance').not.toBeNull();
+
+    const beamNumber = `BM-NOSKU-${Date.now()}`;
+    await gotoAndExpect(page, '/beam-receipts/new');
+    await page
+      .getByRole('group', { name: 'beam origin' })
+      .getByRole('button', { name: 'In-house', exact: true })
+      .click();
+    await fillByLabel(page, 'beam number, items.0', beamNumber);
+    await fillByLabel(page, 'net weight, items.0', String(Q));
+
+    await clickButton(page, 'add yarn to item 1');
+    await selectByAriaLabel(
+      page,
+      'yarn quality, items.0.yarns.0',
+      `${src!.quality_code} – ${src!.quality_name}`,
+    );
+    await fillByLabel(page, 'yarn quantity, items.0.yarns.0', String(Q));
+    // SKU deliberately left unanswered — no click on `yarn sku, items.0.yarns.0`.
+
+    const blockKey = {
+      qualityId: src!.quality_id,
+      lotNumber: src!.lot_number,
+      locationId: src!.loc_id,
+      floorId: src!.floor_id,
+    };
+    const { delta } = await db.ledgerDelta(blockKey, async () => {
+      await clickButton(page, 'Save beam receipt');
+      await expect(page.getByText(SKU_ANSWER_REQUIRED).first()).toBeVisible();
+      // Rule 5 (exact coverage): no pulls exist for this yarn key either —
+      // both errors must render from the same blocked click.
+      await expect(page.getByText('No pulls recorded for this yarn').first()).toBeVisible();
+    });
+    expect(delta).toBe(0);
+    await expect(page).toHaveURL(/\/beam-receipts\/new$/);
+  },
+);
+
+// E5 Test B — the SKU-less pull, end-to-end. This is the headline new
+// coverage: it exercises D2a's required enabler (the aggregated-lots query's
+// `skuId: null` ⇒ IS NULL, `inventoryQuerySchema` at shared's
+// `src/schemas/inventory/index.ts`). If that enabler were missing, the
+// "No shade" yarn row's pull picker would show nothing and this test fails by
+// design — the fix is the enabler landing, never giving the row a real SKU.
+test(
+  'in_house beam receipt: a "No shade" yarn row pulls SKU-less stock end-to-end (D2a IS-NULL enabler)',
+  async ({ page, db }) => {
+    const Q = 25;
+
+    // Produce SKU-less stock via the real production path (yarn purchase
+    // answered with the sentinel) — the seed carries none. Fully placed onto
+    // one floor by the helper (support/sentinel-purchase.ts).
+    const sentinel = await createSentinelPurchase(page, db, Q);
+
+    const quality = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM yarn_qualities WHERE id = $1`,
+      [sentinel.qualityId],
+    );
+    expect(quality, 'the sentinel purchase must reference a real quality').not.toBeNull();
+
+    // The differential control: a real-SKU lot of the SAME quality, already
+    // on-hand from the seed. The picker must offer the sentinel's lot and
+    // must NOT offer this one — proof the IS-NULL filter is actually
+    // filtering, not just "happening to return everything".
+    const realSkuLot = await db.queryOne<{ lot_number: string }>(
+      `SELECT s.lot_number
+       FROM stock_ledger s
+       JOIN location_floors f ON f.id = s.floor_id
+       JOIN locations l ON l.id = f.location_id
+       WHERE s.quality_id = $1 AND s.sku_id IS NOT NULL AND s.job_worker_id IS NULL
+         AND l.status = 'active' AND f.status = 'active'
+       GROUP BY s.lot_number
+       HAVING SUM(s.in_quantity - s.out_quantity) > 0
+       ORDER BY s.lot_number
+       LIMIT 1`,
+      [sentinel.qualityId],
+    );
+    expect(
+      realSkuLot,
+      'seed must carry a real-SKU lot of the sentinel quality for the differential assertion',
+    ).not.toBeNull();
+
+    const beamNumber = `BM-NS-${Date.now()}`;
+    await gotoAndExpect(page, '/beam-receipts/new');
+    await page
+      .getByRole('group', { name: 'beam origin' })
+      .getByRole('button', { name: 'In-house', exact: true })
+      .click();
+    await fillByLabel(page, 'beam number, items.0', beamNumber);
+    await fillByLabel(page, 'net weight, items.0', String(Q));
+
+    await clickButton(page, 'add yarn to item 1');
+    await selectByAriaLabel(
+      page,
+      'yarn quality, items.0.yarns.0',
+      `${quality!.code} – ${quality!.name}`,
+    );
+    await selectByAriaLabel(page, 'yarn sku, items.0.yarns.0', SENTINEL_OPTION_LABEL);
+    await fillByLabel(page, 'yarn quantity, items.0.yarns.0', String(Q));
+
+    // Adding the pull row is what mounts CompositionSourcePicker for this
+    // group (StockPullTable.tsx) and fires the aggregated-lots query — the
+    // no-shade bucket forwards shared's NO_SHADE token as `skuId` (D2a wire
+    // encoding: a query string can't carry `null`). Intercept before the
+    // click that fires it.
+    //
+    // A freshly-appended pull row's CompositionSourcePicker first mounts with
+    // an empty qualityId prop for one render (before the field-array watch
+    // syncs), firing the "disabled" page=1&pageSize=1 no-op query with no
+    // qualityId at all — require `qualityId=<real id>` in the matched request
+    // so that transient request isn't mistaken for the real one.
+    const lotsReqPromise = page.waitForRequest(
+      (req) =>
+        req.method() === 'GET' &&
+        req.url().includes('/inventory/lots/aggregated') &&
+        req.url().includes(`qualityId=${sentinel.qualityId}`),
+    );
+    await clickButton(page, `add pull for ${quality!.code}`);
+    const lotsReq = await lotsReqPromise;
+    const lotsUrl = new URL(lotsReq.url());
+    // Assert the token, not `null` — the wire cannot carry null, and an
+    // implementer who asserts `skuId=null` here is testing a shape that
+    // cannot exist (plan's explicit warning).
+    expect(lotsUrl.searchParams.get('skuId')).toBe('NO_SHADE');
+
+    await page.locator('[aria-label="pull lot, pulls.0"]').click();
+    await expect(
+      page.getByRole('option', { name: new RegExp(`^${sentinel.lotNumber}\\b`) }),
+    ).toBeVisible();
+    await expect(
+      page.getByRole('option', { name: new RegExp(`^${realSkuLot!.lot_number}\\b`) }),
+    ).toHaveCount(0);
+    await page.getByRole('option', { name: new RegExp(`^${sentinel.lotNumber}\\b`) }).click();
+
+    await selectByAriaLabel(
+      page,
+      'pull floor, pulls.0',
+      `${sentinel.location.name} · ${sentinel.floor.name}`,
+    );
+    await fillByLabel(page, 'pull quantity, pulls.0', String(Q));
+
+    // Ledger key — EXACTLY the row applyBeamCompositionLedger writes for this
+    // slice. Non-tautological: the sentinel purchase's own placement already
+    // carries +Q under this exact (qualityId, skuId:null, lotNumber,
+    // locationId, floorId) key before Save — the delta below proves the SAVE
+    // action drained it, not that the row merely exists. `skuId: null`
+    // (never `undefined`, which means "no filter" in fixtures/db.ts and would
+    // make this vacuous).
+    const ledgerKey = {
+      qualityId: sentinel.qualityId,
+      skuId: null,
+      lotNumber: sentinel.lotNumber,
+      locationId: sentinel.location.id,
+      floorId: sentinel.floor.id,
+      jobWorkerId: null,
+    };
+    const { delta } = await db.ledgerDelta(ledgerKey, async () => {
+      await clickButton(page, 'Save beam receipt');
+      await expectToast(page, /^Saved /);
+      await expect(page).toHaveURL(/\/beam-receipts\/[^/]+$/);
+    });
+    expect(delta).toBeCloseTo(-Q, 3);
+
+    // arch-fe's flagged silent failure: the yarnKey bucketing bug does not
+    // throw — a no-shade beam receipt can save successfully having allocated
+    // ZERO composition slices, so a spec that only checks "saved + toast +
+    // URL" (and even the ledger delta above, on a different bug shape) can
+    // pass while the feature is entirely broken. Assert the persisted slice
+    // directly — the thing `allocatePulls` is supposed to produce.
+    const receiptId = page.url().split('/').pop();
+    const slices = await db.queryMany<{
+      sku_id: string | null;
+      lot_number: string;
+      quantity: string;
+    }>(
+      `SELECT bcs.sku_id, bcs.lot_number, bcs.quantity
+       FROM beam_composition_sources bcs
+       JOIN beam_receipt_items bri ON bri.id = bcs.beam_item_id
+       WHERE bri.beam_receipt_id = $1 AND bri.beam_number = $2`,
+      [receiptId, beamNumber],
+    );
+    expect(slices).toHaveLength(1);
+    expect(slices[0]!.sku_id).toBeNull();
+    expect(slices[0]!.lot_number).toBe(sentinel.lotNumber);
+    expect(Number(slices[0]!.quantity)).toBeCloseTo(Q, 3);
+  },
+);
+
+// E5 Test C — Task 7 regression, the D3-unchanged contract.
+//
+// The plan's Test C asked for a real-SKU yarn row's picker to OFFER a
+// SKU-less lot of the same quality ("D2a's differ-allowance"). That is not
+// reachable through the shipped UI, and is not what FE plan Task 7 built —
+// verified by tracing, not guessed:
+//   1. `StockPullTable.tsx`'s groupMap sets
+//      `pullSkuId: need.skuId ?? (need.noShadeAnswered ? NO_SHADE : undefined)`
+//      — a SKU'd row's `need.skuId` is that real skuId, so `pullSkuId` is
+//      NEVER `undefined` or `NO_SHADE` for a SKU'd row.
+//   2. `prisma-inventory.repository.ts`'s `findLotLedgerRowsForAggregation`
+//      applies `skuId` as EXACT equality when given a value — a
+//      `sku_id IS NULL` row can never match a uuid filter.
+//   3. FE plan Task 7's own test list requires "a SKU'd row still sends its
+//      `skuId`" as a REGRESSION (the D3 reference-path behaviour, explicitly
+//      unchanged by this workstream) — the strict filter is the specified
+//      behaviour, not an oversight to relax.
+// F1's "the beam's declared SKU and a pulled legacy null-SKU position may
+// differ" is a statement about NOT cross-checking the two client-side
+// (D2a) — it is not a claim that the picker will surface a mismatched-SKU
+// lot; the picker's query scope makes that unreachable by construction.
+//
+// Reported to lead separately: because `applyBeamCompositionLedger` writes
+// `skuId: slice.skuId ?? null` (the DECLARED row's SKU, per
+// `allocate-pulls.ts`) and `findLotLocationBalance` is called from
+// `createInHouse` WITHOUT qualityId/skuId (balance-checks by lot+floor only),
+// nothing but this client-side picker filter stands between a SKU'd row and
+// a cross-bucket ledger write (the same class of bug as B-012) if a slice
+// ever named a lot whose real balance sits under a different/null SKU. Not
+// fixed here — out of this task's scope, and the design (D2a) explicitly
+// assumes the picker constrains the input rather than adding a BE guard.
+//
+// This test pins the actual, narrower contract instead: a SKU'd yarn row's
+// pull query sends that exact `skuId`, and the SKU-less lot minted by the
+// sentinel is excluded from its picker.
+test(
+  "in_house beam receipt: a SKU'd yarn row's pull query excludes SKU-less stock of the same quality",
+  async ({ page, db }) => {
+    const Q = 14;
+    const sentinel = await createSentinelPurchase(page, db, Q);
+
+    const quality = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM yarn_qualities WHERE id = $1`,
+      [sentinel.qualityId],
+    );
+    expect(quality, 'the sentinel purchase must reference a real quality').not.toBeNull();
+
+    const sku = await db.queryOne<{ id: string; name: string; shade_number: string | null }>(
+      `SELECT id, name, shade_number FROM yarn_skus
+       WHERE status = 'active' AND quality_id = $1
+       ORDER BY code LIMIT 1`,
+      [sentinel.qualityId],
+    );
+    expect(sku, 'seed must provide a real SKU for the sentinel quality').not.toBeNull();
+    const skuOptionLabel =
+      sku!.shade_number !== null && sku!.shade_number !== ''
+        ? `${sku!.name} — ${sku!.shade_number}`
+        : sku!.name;
+
+    const beamNumber = `BM-SKUD-${Date.now()}`;
+    await gotoAndExpect(page, '/beam-receipts/new');
+    await page
+      .getByRole('group', { name: 'beam origin' })
+      .getByRole('button', { name: 'In-house', exact: true })
+      .click();
+    await fillByLabel(page, 'beam number, items.0', beamNumber);
+    await fillByLabel(page, 'net weight, items.0', String(Q));
+
+    await clickButton(page, 'add yarn to item 1');
+    await selectByAriaLabel(
+      page,
+      'yarn quality, items.0.yarns.0',
+      `${quality!.code} – ${quality!.name}`,
+    );
+    await selectByAriaLabel(page, 'yarn sku, items.0.yarns.0', skuOptionLabel);
+    await fillByLabel(page, 'yarn quantity, items.0.yarns.0', String(Q));
+
+    // See Test B's comment: a fresh pull row's picker first fires a
+    // transient no-op query with no `qualityId` at all — require the real
+    // qualityId in the matched request.
+    const lotsReqPromise = page.waitForRequest(
+      (req) =>
+        req.method() === 'GET' &&
+        req.url().includes('/inventory/lots/aggregated') &&
+        req.url().includes(`qualityId=${sentinel.qualityId}`),
+    );
+    await clickButton(page, `add pull for ${quality!.code}`);
+    const lotsReq = await lotsReqPromise;
+    const lotsUrl = new URL(lotsReq.url());
+    expect(lotsUrl.searchParams.get('skuId')).toBe(sku!.id);
+
+    await page.locator('[aria-label="pull lot, pulls.0"]').click();
+    await expect(
+      page.getByRole('option', { name: new RegExp(`^${sentinel.lotNumber}\\b`) }),
+    ).toHaveCount(0);
+  },
+);
+
+test('receipt register rows are clickable through to the detail page (spec 2026-07-30)', async ({
+  page,
+  db,
+}) => {
+  const receipt = await db.queryOne<{ id: string; entry_no: string }>(
+    `SELECT id, entry_no FROM beam_receipts ORDER BY created_at DESC LIMIT 1`,
+  );
+  expect(receipt, 'seed must provide at least one beam receipt').not.toBeNull();
+
+  await gotoAndExpect(page, '/beam-receipts');
+  const row = page.getByRole('row', { name: receipt!.entry_no });
+  await expect(row).toBeVisible();
+  // The whole row is clickable; the View link stays as the keyboard path.
+  await expect(row.getByRole('link', { name: 'View' })).toBeVisible();
+  await row.getByText(receipt!.entry_no, { exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/beam-receipts/${receipt!.id}$`));
+  await expect(page.getByRole('heading', { name: receipt!.entry_no })).toBeVisible();
+});
