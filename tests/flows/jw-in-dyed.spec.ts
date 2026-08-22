@@ -7,7 +7,7 @@ import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -190,7 +190,7 @@ async function createOutPosition(
   q: number,
 ): Promise<string> {
   await gotoAndExpect(page, '/jw-challans-out/new');
-  await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+  await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
   // getByRole (not getByLabel) — the outer Operations <label> wraps the whole
   // multi-select group (known FE quirk, task-14-report.md).
   await page.getByRole('checkbox', { name: jobWorkTypeLabel }).check();

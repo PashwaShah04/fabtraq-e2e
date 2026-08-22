@@ -3,7 +3,7 @@ import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -50,7 +50,7 @@ async function openJwPosition(
   q: number,
 ): Promise<string> {
   await gotoAndExpect(page, '/jw-challans-out/new');
-  await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+  await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
   await page.getByRole('checkbox', { name: jobWorkTypeLabel }).check();
   await selectByAriaLabel(page, 'Quality for line 1', `${src.quality_code} – ${src.quality_name}`);
   await selectByAriaLabel(page, 'Select SKU', skuLabelOf(src));
@@ -270,7 +270,7 @@ test(
     // the lot has already been through, so re-requesting Twisting or Dyeing
     // here would filter the lot OUT of its own picker.
     await gotoAndExpect(page, '/jw-challans-out/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await page.getByRole('checkbox', { name: 'Gassing' }).check();
     await selectByAriaLabel(
       page,
@@ -315,7 +315,7 @@ async function receiveMergedLot(
     await expect(page.getByLabel(`consumed quantity, lots.0.sources.${i}`)).toHaveValue(String(s.q));
   }
 
-  await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ covered');
+  await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ Covered');
 
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);

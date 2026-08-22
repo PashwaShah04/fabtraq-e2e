@@ -60,7 +60,7 @@ const ROUTES: readonly GuardedRoute[] = [
   },
   {
     path: '/fabric-designs/new',
-    heading: 'New Fabric Design',
+    heading: 'New fabric design',
     allowedRoles: ['owner', 'storekeeper'],
   },
   {

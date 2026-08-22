@@ -163,9 +163,10 @@ test('create a v2 design (warp/weft groups + colour-ways), view its rich detail,
   expect(mappedCell!.sku_id).toBe(skus!.red_id);
 
   // ── LIST — new design appears; follow its row into the detail page (no
-  // edit route exists — columns.tsx renders a "View" link to /designs/:id).
+  // edit route exists — DataTable's onRowClick navigates the whole row to
+  // /designs/:id, there is no per-row View link/button any more).
   await gotoAndExpect(page, '/designs');
-  await page.getByRole('row', { name }).getByRole('link', { name: 'View' }).click();
+  await page.getByRole('row', { name }).click();
   await expect(page).toHaveURL(/\/designs\/[^/]+$/);
 
   // ── DETAIL — design-detail.page.tsx renders PageHeader title=name,
@@ -219,7 +220,14 @@ test('create a v2 design (warp/weft groups + colour-ways), view its rich detail,
     'edit mapping for Red Shade',
     `${blueSku!.name} (${blueSku!.code})`,
   );
-  await expect(page.getByText(`${blueSku!.name} (${blueSku!.code})`).first()).toBeVisible();
+  // Wait on the TRIGGER label, not a page-wide getByText: the just-clicked
+  // popover's own "BLUE (SKU-002)" option satisfies getByText instantly,
+  // letting the DB assert below race the PATCH. The trigger only re-labels
+  // after cell.skuId round-trips through the server (invalidate → refetch),
+  // so this is the real success signal.
+  await expect(page.locator('[aria-label="edit mapping for Red Shade"]')).toContainText(
+    `${blueSku!.name} (${blueSku!.code})`,
+  );
 
   const remappedCell = await db.queryOne<{ sku_id: string }>(
     `SELECT sku_id FROM design_shade_cells WHERE id = $1`,

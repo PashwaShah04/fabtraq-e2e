@@ -47,9 +47,8 @@ test('beam register lists a received beam and its detail renders', async ({ page
   // Status badge cell renders the human label (columns.tsx STATUS_LABEL.received).
   await expect(row.getByText('Received')).toBeVisible();
 
-  // DETAIL — the whole row is clickable (spec 2026-07-30); the View link stays
-  // as the keyboard/a11y path. Navigate by clicking a data cell, not the link.
-  await expect(row.getByRole('link', { name: 'View' })).toBeVisible();
+  // DETAIL — the whole row is clickable (spec 2026-07-30); the per-row View
+  // link/button was removed — DataTable's onRowClick is the only affordance.
   await row.getByText(seededBeam!.beam_number, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/beams/${seededBeam!.id}$`));
 
