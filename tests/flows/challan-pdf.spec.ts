@@ -5,7 +5,7 @@ import { env } from '../../fixtures/env';
 import { codes } from '../../fixtures/codes';
 import type { Db } from '../../fixtures/db';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 import { getCsrfToken } from '../../support/api';
 import { createSentinelPurchase } from '../../support/sentinel-purchase';
@@ -70,7 +70,7 @@ test(
       'Select floor and location',
       `${sentinel.location.name} · ${sentinel.floor.name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     await clickButton(page, 'Save challan');
     await expectToast(page, /^Saved /);

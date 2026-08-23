@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
   selectByLabel,
   clickButton,
@@ -133,7 +133,7 @@ test(
       'Select floor and location',
       `${src!.loc_name} · ${src!.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // 3) Assert the ledger delta on the SAME (lotNumber, skuId, floorId) key the
     // seed query found. Non-tautological: the key already had a positive balance
@@ -231,7 +231,7 @@ test(
       'Select floor and location',
       `${sentinel.location.name} · ${sentinel.floor.name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', '50');
+    await fillByLabelExact(page, 'placement quantity 1', '50');
 
     await clickButton(page, 'Save challan');
 

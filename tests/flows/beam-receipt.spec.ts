@@ -3,7 +3,7 @@ import { env } from '../../fixtures/env';
 import { SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
   selectByLabel,
   clickButton,
@@ -340,7 +340,7 @@ test(
       'Select floor and location',
       `${src!.loc_name} · ${src!.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q_WARP));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WARP));
     await clickButton(page, 'Save challan');
     await expectToast(page, /^Saved /);
     await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -446,7 +446,7 @@ test(
         'Select floor and location',
         `${receivingFloor!.loc_name} · ${receivingFloor!.floor_name}`,
       );
-      await fillByLabel(page, 'placement quantity 1', String(qty));
+      await fillByLabelExact(page, 'placement quantity 1', String(qty));
       await clickButton(page, 'Save challan');
       await expectToast(page, /^Saved /);
       await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);

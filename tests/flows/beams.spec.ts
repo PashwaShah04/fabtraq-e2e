@@ -39,6 +39,14 @@ test('beam register lists a received beam and its detail renders', async ({ page
   // substring option match, which is ambiguous here ("Received" also matches the
   // "Fabric Received" option) — select with an exact option-name match instead.
   await gotoAndExpect(page, '/beams');
+
+  // SEARCH — beam-number substring search (shared 1.21.0 beamListQuerySchema
+  // `search`; BE ILIKE on beam_number; FE DataTable search box, 250ms debounce).
+  // Lowercased query proves the case-insensitive path.
+  await page.getByRole('textbox', { name: 'Search beams' }).fill(seededBeam!.beam_number.toLowerCase());
+  await expect(page.getByRole('row', { name: seededBeam!.beam_number })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search beams' }).clear();
+
   await page.locator('[aria-label="Filter by status"]').click();
   await page.getByRole('option', { name: 'Received', exact: true }).click();
 

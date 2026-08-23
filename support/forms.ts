@@ -4,6 +4,15 @@ export async function fillByLabel(page: Page, label: string, value: string): Pro
   await page.getByLabel(label, { exact: false }).fill(value);
 }
 
+// Exact-match variant for labels that are a substring of a sibling's label.
+// Needed for "placement quantity N": the edit view's existing rows are
+// labelled "existing placement quantity <uuid>", and when that uuid happens
+// to start with N the substring locator strict-mode-collides (1-in-16 flake,
+// seen live 2026-08-23).
+export async function fillByLabelExact(page: Page, label: string, value: string): Promise<void> {
+  await page.getByLabel(label, { exact: true }).fill(value);
+}
+
 // Click a select/combobox trigger, click the option, then WAIT for the option
 // list to unmount before returning. The barrier matters: a just-closed
 // combobox popover stays mounted for its ~180ms exit animation, so the next

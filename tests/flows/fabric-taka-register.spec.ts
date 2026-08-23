@@ -2,7 +2,7 @@ import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
   selectByLabel,
   clickButton,
@@ -252,7 +252,7 @@ test(
       'Select floor and location',
       `${placeAt.location_name} · ${placeAt.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
     await clickButton(page, 'Save dispatch');
     await expectToast(page, /^Saved /);

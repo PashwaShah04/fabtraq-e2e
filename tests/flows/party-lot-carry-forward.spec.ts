@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
   selectByLabel,
   clickButton,
@@ -58,7 +58,7 @@ async function openJwPosition(
   await fillByLabel(page, 'Net weight for line 1', String(q));
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select floor and location', `${src.loc_name} · ${src.floor_name}`);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
   await clickButton(page, 'Save challan');
   await expectToast(page, /^Saved /);
   await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -98,7 +98,7 @@ async function receiveLot(
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
   await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
 
   await clickButton(page, 'Save receipt');
   await expectToast(page, /^Saved /);
@@ -163,7 +163,7 @@ async function createPurchaseWithPartyLot(
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
   await selectByAriaLabel(page, 'Select floor', floor!.name);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
 
   await clickButton(page, 'Save purchase');
   await expectToast(page, /^Saved /);
@@ -320,7 +320,7 @@ async function receiveMergedLot(
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
   await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-  await fillByLabel(page, 'placement quantity 1', String(netWeight));
+  await fillByLabelExact(page, 'placement quantity 1', String(netWeight));
 
   await clickButton(page, 'Save receipt');
   await expectToast(page, /^Saved /);

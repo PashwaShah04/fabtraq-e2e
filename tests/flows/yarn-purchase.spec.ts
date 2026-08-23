@@ -2,7 +2,7 @@ import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
 import { SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 import type { Db } from '../../fixtures/db';
 
@@ -93,7 +93,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location.code} – ${location.name}`);
     await selectByAriaLabel(page, 'Select floor', floor.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // Intercept the create request BEFORE the click that fires it — E3's
     // wire-payload requirement: a real-SKU pick must send `skuId` on the wire.
@@ -160,7 +160,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location.code} – ${location.name}`);
     await selectByAriaLabel(page, 'Select floor', floor.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // 1) Unanswered blocks. Every other field is filled — SKU is the only gap.
     // The zero-delta assertion is what distinguishes a real block from a form

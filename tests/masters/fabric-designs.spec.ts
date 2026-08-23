@@ -33,11 +33,11 @@ test('create → list → edit → persist a fabric design', async ({ page, db }
 
   // LIST — new fabric design appears
   await gotoAndExpect(page, '/fabric-designs');
-  await expect(page.getByRole('cell', { name })).toBeVisible();
+  await expect(page.getByRole('cell', { name, exact: true })).toBeVisible();
 
   // EDIT — same row/link shape as job-workers.spec.ts / qualities.spec.ts
   // (Edit is a react-router Link, not a plain button).
-  await page.getByRole('row', { name }).getByRole('link', { name: 'Edit' }).click();
+  await page.getByRole('row', { name }).getByRole('button', { name: 'Edit' }).click();
   await expect(page).toHaveURL(/\/fabric-designs\/[^/]+\/edit/);
   await fillByLabel(page, 'Expected GLM', '250');
   await clickButton(page, 'Update');
@@ -45,7 +45,7 @@ test('create → list → edit → persist a fabric design', async ({ page, db }
 
   // PERSIST — reopen via a fresh navigation, verify the edited field.
   await gotoAndExpect(page, '/fabric-designs');
-  await page.getByRole('row', { name }).getByRole('link', { name: 'Edit' }).click();
+  await page.getByRole('row', { name }).getByRole('button', { name: 'Edit' }).click();
   await expect(page).toHaveURL(/\/fabric-designs\/[^/]+\/edit/);
   await expect(page.getByLabel('Expected GLM')).toHaveValue('250');
 });

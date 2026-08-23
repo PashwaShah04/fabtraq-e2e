@@ -2,7 +2,7 @@ import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
 import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 
 // A fresh purchase-origin beam, status='received'. weaverId is optional —
@@ -188,7 +188,7 @@ test(
     await fillByLabel(page, 'Net weight for weft line 1', String(Q_WEFT));
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select floor and location', `${src!.loc_name} · ${src!.floor_name}`);
-    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
 
     // Two ledger legs cannot both wrap the same click via db.ledgerDelta —

@@ -1,7 +1,7 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
   selectByLabel,
   clickButton,
@@ -95,7 +95,7 @@ test(
     await fillByLabel(page, 'Net weight for weft line 1', String(Q_WEFT));
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select floor and location', `${src!.loc_name} · ${src!.floor_name}`);
-    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
 
     // At-JW weft position key — jobWorkerId set, floor/location NULL

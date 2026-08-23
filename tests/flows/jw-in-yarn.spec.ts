@@ -2,7 +2,7 @@ import { test, expect } from '../../fixtures/test';
 import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
   selectByLabel,
   clickButton,
@@ -129,7 +129,7 @@ async function openJwPosition(
   await fillByLabel(page, 'Net weight for line 1', String(q));
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select floor and location', `${src.loc_name} · ${src.floor_name}`);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
   await clickButton(page, 'Save challan');
   await expectToast(page, /^Saved /);
   await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -195,7 +195,7 @@ async function receiveLot(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
     await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(q));
+    await fillByLabelExact(page, 'placement quantity 1', String(q));
   }
 
   await clickButton(page, 'Save receipt');
@@ -480,7 +480,7 @@ test(
       `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_TOTAL));
 
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
@@ -599,7 +599,7 @@ test(
       `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     const floorKey = {
       qualityId: src!.quality_id,
@@ -743,7 +743,7 @@ test(
       `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_TOTAL));
 
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);

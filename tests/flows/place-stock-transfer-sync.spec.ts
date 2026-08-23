@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
 
 // ---------------------------------------------------------------------------
@@ -162,7 +162,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floorA.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     const { delta: bucketDelta } = await db.ledgerDelta(bucketKey, async () => {
       await clickButton(page, 'Save Placements');
@@ -404,7 +404,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floor!.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
     await clickButton(page, 'Save Placements');
     await expectToast(page, 'Stock placed successfully');
     await expect(page).toHaveURL(/\/place-stock$/);
@@ -576,7 +576,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floor!.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
     await clickButton(page, 'Save Placements');
     await expectToast(page, 'Stock placed successfully');
 
