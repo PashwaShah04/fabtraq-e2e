@@ -1,9 +1,9 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -72,7 +72,8 @@ test(
     // DISPATCH both beams + weft to the weaver, reusing weaving-dispatch
     // .spec.ts's proven UI-drive (its own selectors, not new contract).
     await gotoAndExpect(page, '/weaving-dispatches/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    // Dispatch form's Job worker is a Combobox since the 2026-08-22 redesign — click-driven, not a native select.
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await page.getByLabel('Show beams for all weavers').check();
     await page.getByLabel('Search beams').fill(beam1.beamNumber);
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
@@ -94,7 +95,7 @@ test(
     await fillByLabel(page, 'Net weight for weft line 1', String(Q_WEFT));
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select floor and location', `${src!.loc_name} · ${src!.floor_name}`);
-    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
 
     // At-JW weft position key — jobWorkerId set, floor/location NULL
@@ -139,7 +140,8 @@ test(
     // and pressing it did nothing at all.
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
     await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    // Weaving-in form's Job worker is a Combobox since the 2026-08-22 redesign — click-driven, not a native select.
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await expect(page.getByLabel(`Select beam ${beam1.beamNumber}`)).toBeChecked();
     await expect(page.getByLabel(`Select beam ${beam2.beamNumber}`)).toBeChecked();
 
@@ -291,7 +293,8 @@ test(
     // actually written, so the beam-remaining assertions below prove the
     // implicit path really persisted the link.
     await gotoAndExpect(page, '/weaving-ins/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    // Weaving-in form's Job worker is a Combobox since the 2026-08-22 redesign — click-driven, not a native select.
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
     singleHeaderBeam = true;
     await fillTaka(0, { meters: 10, weightKg: 2.5, attribution: [{ beamNumber: beam1.beamNumber, meters: 10 }] });

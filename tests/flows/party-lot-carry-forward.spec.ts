@@ -1,9 +1,9 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -50,7 +50,7 @@ async function openJwPosition(
   q: number,
 ): Promise<string> {
   await gotoAndExpect(page, '/jw-challans-out/new');
-  await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+  await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
   await page.getByRole('checkbox', { name: jobWorkTypeLabel }).check();
   await selectByAriaLabel(page, 'Quality for line 1', `${src.quality_code} – ${src.quality_name}`);
   await selectByAriaLabel(page, 'Select SKU', skuLabelOf(src));
@@ -58,7 +58,7 @@ async function openJwPosition(
   await fillByLabel(page, 'Net weight for line 1', String(q));
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select floor and location', `${src.loc_name} · ${src.floor_name}`);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
   await clickButton(page, 'Save challan');
   await expectToast(page, /^Saved /);
   await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -98,7 +98,7 @@ async function receiveLot(
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
   await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
 
   await clickButton(page, 'Save receipt');
   await expectToast(page, /^Saved /);
@@ -163,7 +163,7 @@ async function createPurchaseWithPartyLot(
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
   await selectByAriaLabel(page, 'Select floor', floor!.name);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
 
   await clickButton(page, 'Save purchase');
   await expectToast(page, /^Saved /);
@@ -270,7 +270,7 @@ test(
     // the lot has already been through, so re-requesting Twisting or Dyeing
     // here would filter the lot OUT of its own picker.
     await gotoAndExpect(page, '/jw-challans-out/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
     await page.getByRole('checkbox', { name: 'Gassing' }).check();
     await selectByAriaLabel(
       page,
@@ -315,12 +315,12 @@ async function receiveMergedLot(
     await expect(page.getByLabel(`consumed quantity, lots.0.sources.${i}`)).toHaveValue(String(s.q));
   }
 
-  await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ covered');
+  await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ Covered');
 
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
   await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-  await fillByLabel(page, 'placement quantity 1', String(netWeight));
+  await fillByLabelExact(page, 'placement quantity 1', String(netWeight));
 
   await clickButton(page, 'Save receipt');
   await expectToast(page, /^Saved /);

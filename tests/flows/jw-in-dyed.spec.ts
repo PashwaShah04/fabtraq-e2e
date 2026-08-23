@@ -5,9 +5,9 @@ import { codes } from '../../fixtures/codes';
 import { DYED_LOT_SKU_REQUIRED, SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -190,7 +190,7 @@ async function createOutPosition(
   q: number,
 ): Promise<string> {
   await gotoAndExpect(page, '/jw-challans-out/new');
-  await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+  await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
   // getByRole (not getByLabel) — the outer Operations <label> wraps the whole
   // multi-select group (known FE quirk, task-14-report.md).
   await page.getByRole('checkbox', { name: jobWorkTypeLabel }).check();
@@ -200,7 +200,7 @@ async function createOutPosition(
   await fillByLabel(page, 'Net weight for line 1', String(q));
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select floor and location', `${src.loc_name} · ${src.floor_name}`);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
   await clickButton(page, 'Save challan');
   await expectToast(page, /^Saved /);
   await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -313,7 +313,7 @@ test(
       `${receivingFloor.loc_code} – ${receivingFloor.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // ── Two-sided delta, same keys as jw-in-yarn.spec.ts. jwAfterOut is the
     // baseline here (not jwBaseline) — the JW-in leg should hand back

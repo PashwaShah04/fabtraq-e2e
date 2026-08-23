@@ -21,7 +21,7 @@ test('create → list → edit → persist a transporter', async ({ page }) => {
 
   // LIST — new transporter appears
   await gotoAndExpect(page, '/transporters');
-  await expect(page.getByRole('cell', { name })).toBeVisible();
+  await expect(page.getByRole('cell', { name, exact: true })).toBeVisible();
 
   // EDIT — row's action cell renders an "Edit" <a> (react-router Link via
   // Button asChild), per fabtraq-fe/src/features/transporters/columns.tsx —

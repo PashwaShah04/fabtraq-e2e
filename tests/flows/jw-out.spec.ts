@@ -1,9 +1,9 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -84,11 +84,10 @@ test(
     // 2) Drive the form with the derived values.
     await gotoAndExpect(page, '/jw-challans-out/new');
 
-    // Job worker is a plain native <select aria-label="Job worker">
-    // (jw-challan-out-form.page.tsx), not a shadcn Select — selectNativeByLabel
-    // routes through Playwright's selectOption() instead of the click+click
-    // pattern the other helpers use.
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    // Job worker is a Combobox (aria-label="Job worker") since the 2026-08-22
+    // UI redesign — selectByLabel drives it via the click-trigger-then-click-option
+    // pattern.
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
 
     // Operations checkboxes (JobWorkTypeMultiSelect, shared/components) are plain
     // <input type="checkbox"> wrapped in <label htmlFor>, labelled via
@@ -134,7 +133,7 @@ test(
       'Select floor and location',
       `${src!.loc_name} · ${src!.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // 3) Assert the ledger delta on the SAME (lotNumber, skuId, floorId) key the
     // seed query found. Non-tautological: the key already had a positive balance
@@ -208,7 +207,7 @@ test(
     );
 
     await gotoAndExpect(page, '/jw-challans-out/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
 
     // Operations must be picked before SourceLotPicker enables (it's gated on
     // both jobWorkTypes AND quality — see the happy-path test's note above).
@@ -232,7 +231,7 @@ test(
       'Select floor and location',
       `${sentinel.location.name} · ${sentinel.floor.name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', '50');
+    await fillByLabelExact(page, 'placement quantity 1', '50');
 
     await clickButton(page, 'Save challan');
 

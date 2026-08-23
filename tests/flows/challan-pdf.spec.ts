@@ -5,7 +5,7 @@ import { env } from '../../fixtures/env';
 import { codes } from '../../fixtures/codes';
 import type { Db } from '../../fixtures/db';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, selectNativeByLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 import { getCsrfToken } from '../../support/api';
 import { createSentinelPurchase } from '../../support/sentinel-purchase';
@@ -56,7 +56,7 @@ test(
     // 1) Create OUR OWN jw-challan-out via the real form (not reusing any challan another spec
     // created — specs own their fixtures).
     await gotoAndExpect(page, '/jw-challans-out/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+    await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
     await page.getByLabel('Twisting').check();
     await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
     // No SKU select: createSentinelPurchase's lot is SKU-less by design (the "No shade / greige"
@@ -70,7 +70,7 @@ test(
       'Select floor and location',
       `${sentinel.location.name} · ${sentinel.floor.name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     await clickButton(page, 'Save challan');
     await expectToast(page, /^Saved /);

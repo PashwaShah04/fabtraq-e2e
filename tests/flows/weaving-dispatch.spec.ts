@@ -2,12 +2,7 @@ import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
 import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
-import {
-  fillByLabel,
-  selectByAriaLabel,
-  selectNativeByLabel,
-  clickButton,
-} from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 
 // A fresh purchase-origin beam, status='received'. weaverId is optional —
@@ -157,10 +152,10 @@ test(
 
     await gotoAndExpect(page, '/weaving-dispatches/new');
 
-    // Header — native <select aria-label="Job worker"> (same pattern as
-    // jw-challan-out-form.page.tsx). Date pre-fills to today (controlled
+    // Header — Job worker is a Combobox since the 2026-08-22 redesign —
+    // click-driven, not a native select. Date pre-fills to today (controlled
     // Input, no register) — left untouched.
-    await selectNativeByLabel(page, 'Job worker', `${jobWorkerA!.code} – ${jobWorkerA!.name}`);
+    await selectByLabel(page, 'Job worker', `${jobWorkerA!.code} – ${jobWorkerA!.name}`);
 
     // Beam section — BeamPickerTable.tsx: "Show all weavers" is a plain
     // checkbox labelled "Show beams for all weavers", NOT a button (plan's
@@ -193,7 +188,7 @@ test(
     await fillByLabel(page, 'Net weight for weft line 1', String(Q_WEFT));
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select floor and location', `${src!.loc_name} · ${src!.floor_name}`);
-    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
 
     // Two ledger legs cannot both wrap the same click via db.ledgerDelta —
@@ -302,7 +297,8 @@ test('beam-only dispatch mints JWB but no JWO', async ({ page, db }) => {
   const createdAtCutoff = dbNow!.t;
 
   await gotoAndExpect(page, '/weaving-dispatches/new');
-  await selectNativeByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+  // Job worker is a Combobox since the 2026-08-22 redesign — click-driven, not a native select.
+  await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
   await page.getByLabel('Show beams for all weavers').check();
   await page.getByLabel(`Select beam ${beamNumber}`).check();
   await clickButton(page, 'Save dispatch');

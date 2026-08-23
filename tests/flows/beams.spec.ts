@@ -39,6 +39,14 @@ test('beam register lists a received beam and its detail renders', async ({ page
   // substring option match, which is ambiguous here ("Received" also matches the
   // "Fabric Received" option) — select with an exact option-name match instead.
   await gotoAndExpect(page, '/beams');
+
+  // SEARCH — beam-number substring search (shared 1.21.0 beamListQuerySchema
+  // `search`; BE ILIKE on beam_number; FE DataTable search box, 250ms debounce).
+  // Lowercased query proves the case-insensitive path.
+  await page.getByRole('textbox', { name: 'Search beams' }).fill(seededBeam!.beam_number.toLowerCase());
+  await expect(page.getByRole('row', { name: seededBeam!.beam_number })).toBeVisible();
+  await page.getByRole('textbox', { name: 'Search beams' }).clear();
+
   await page.locator('[aria-label="Filter by status"]').click();
   await page.getByRole('option', { name: 'Received', exact: true }).click();
 
@@ -47,9 +55,8 @@ test('beam register lists a received beam and its detail renders', async ({ page
   // Status badge cell renders the human label (columns.tsx STATUS_LABEL.received).
   await expect(row.getByText('Received')).toBeVisible();
 
-  // DETAIL — the whole row is clickable (spec 2026-07-30); the View link stays
-  // as the keyboard/a11y path. Navigate by clicking a data cell, not the link.
-  await expect(row.getByRole('link', { name: 'View' })).toBeVisible();
+  // DETAIL — the whole row is clickable (spec 2026-07-30); the per-row View
+  // link/button was removed — DataTable's onRowClick is the only affordance.
   await row.getByText(seededBeam!.beam_number, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/beams/${seededBeam!.id}$`));
 

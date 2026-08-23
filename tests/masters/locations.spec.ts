@@ -31,11 +31,11 @@ test('create with floors field-array → list → edit → persist a location', 
 
   // LIST — new location appears
   await gotoAndExpect(page, '/locations');
-  await expect(page.getByRole('cell', { name })).toBeVisible();
+  await expect(page.getByRole('cell', { name, exact: true })).toBeVisible();
 
   // EDIT — row's action cell renders an "Edit" <a> (react-router Link via
   // Button asChild), per fabtraq-fe/src/features/locations/columns.tsx.
-  await page.getByRole('row', { name }).getByRole('link', { name: 'Edit' }).click();
+  await page.getByRole('row', { name }).getByRole('button', { name: 'Edit' }).click();
   await expect(page).toHaveURL(/\/locations\/[^/]+\/edit/);
 
   // The backend returns floors ORDER BY name ASC (confirmed via server
@@ -67,7 +67,7 @@ test('create with floors field-array → list → edit → persist a location', 
   // that the other floor is still present. Resolve rows by value again —
   // the sort order may again differ from the previous fetch.
   await gotoAndExpect(page, '/locations');
-  await page.getByRole('row', { name }).getByRole('link', { name: 'Edit' }).click();
+  await page.getByRole('row', { name }).getByRole('button', { name: 'Edit' }).click();
   await expect(page).toHaveURL(/\/locations\/[^/]+\/edit/);
   const pRow1 = page.getByLabel('Floor 1 name', { exact: false });
   const pRow2 = page.getByLabel('Floor 2 name', { exact: false });

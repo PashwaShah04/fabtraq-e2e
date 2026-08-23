@@ -2,9 +2,9 @@ import { test, expect } from '../../fixtures/test';
 import { env } from '../../fixtures/env';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -226,7 +226,8 @@ test(
     // DISPATCH both beams + weft to the weaver — identical UI-drive to
     // weaving-in.spec.ts (its own selectors, not new contract).
     await gotoAndExpect(page, '/weaving-dispatches/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+    // Dispatch form's Job worker is a Combobox since the 2026-08-22 redesign — click-driven, not a native select.
+    await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
     await page.getByLabel('Show beams for all weavers').check();
     await page.getByLabel('Search beams').fill(beam1.beamNumber);
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
@@ -251,7 +252,7 @@ test(
       'Select floor and location',
       `${placeAt.location_name} · ${placeAt.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q_WEFT));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WEFT));
     await fillByLabel(page, 'Weft Value of Goods', '3000');
     await clickButton(page, 'Save dispatch');
     await expectToast(page, /^Saved /);
@@ -267,7 +268,8 @@ test(
     const s3 = codes.unique('S');
 
     await gotoAndExpect(page, '/weaving-ins/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+    // Weaving-in form's Job worker is a Combobox since the 2026-08-22 redesign — click-driven, not a native select.
+    await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
     await fillByLabel(page, 'Paper challan no', '149');
     await page.getByLabel(`Select beam ${beam1.beamNumber}`).check();
     await page.getByLabel(`Select beam ${beam2.beamNumber}`).check();

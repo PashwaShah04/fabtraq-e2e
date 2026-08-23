@@ -11,7 +11,7 @@ import {
   SKU_ANSWER_REQUIRED,
 } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
 import { createSentinelPurchase } from '../../support/sentinel-purchase';
 import { importDesignWithUnmappedColourway3 } from '../../support/design-fixtures';
@@ -203,7 +203,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location.code} – ${location.name}`);
     await selectByAriaLabel(page, 'Select floor', floor.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     const { delta: blockedDelta } = await db.ledgerDelta({ qualityId: quality!.id }, async () => {
       await clickButton(page, 'Save purchase');

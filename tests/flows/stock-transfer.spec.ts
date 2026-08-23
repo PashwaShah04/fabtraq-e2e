@@ -2,71 +2,43 @@ import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
 import { selectByLabel, selectByAriaLabel, fillByLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
-import { createSentinelPurchase } from '../../support/sentinel-purchase';
+import { createSentinelPurchase, createSkuPurchase } from '../../support/sentinel-purchase';
 
 test('transfer moves stock floor→floor with SKU preserved and no phantom row', async ({ page, db }) => {
-  // 1) Derive EVERYTHING from the ledger before touching the UI.
-  // The transfer-form picker (TransferSourcePicker) only offers positions with
-  // jobWorkerId === null (stock-transfer-form.page.tsx: `positions` filter), so the
-  // seed-position query must apply the same filter — otherwise it could pick a
-  // (floor, lot) group that sums job-worker-attributed rows the UI never renders.
-  //
-  // `AND s.sku_id IS NOT NULL` + the `ORDER BY` below are E3 hardening: this test
-  // used to run `LIMIT 1` with no ORDER BY, which was fine only because no
-  // null-SKU stock existed anywhere in the DB. E3 (yarn-purchase.spec.ts) and the
-  // sentinel test below now create persistent null-SKU stock — without this
-  // filter, Postgres could return a (floor, lot) group with sku_id === null,
-  // silently short-circuiting the `if (src!.sku_id !== null)` phantom-row check
-  // a few lines down. Keep this filter; it is not a stylistic cleanup.
-  const src = await db.queryOne<{
-    loc_name: string;
-    floor_name: string;
-    floor_id: string;
-    lot_number: string;
-    sku_id: string | null;
-  }>(
-    `SELECT l.name AS loc_name, f.name AS floor_name, f.id AS floor_id,
-            s.lot_number, s.sku_id
-     FROM stock_ledger s
-     JOIN location_floors f ON f.id = s.floor_id
-     JOIN locations l ON l.id = f.location_id
-     WHERE s.lot_number IS NOT NULL
-       AND s.sku_id IS NOT NULL
-       AND s.job_worker_id IS NULL
-       AND l.status = 'active'
-       AND f.status = 'active'
-     GROUP BY l.name, f.name, f.id, s.lot_number, s.sku_id
-     HAVING SUM(s.in_quantity - s.out_quantity) >= 5
-     ORDER BY s.lot_number, f.id
-     LIMIT 1`,
-  );
-  expect(src, 'seed must provide a floor with >=5 of some lot').not.toBeNull();
+  // 1) Mint this spec's OWN real-SKU lot via a production-path purchase.
+  // This test used to source "whichever seeded (floor, lot) has >= 5 balance"
+  // from the live ledger — a sibling spec running in parallel could drain that
+  // lot between the DB probe and the UI submit (seen live 2026-08-23: balance
+  // dropped to 2 KG mid-test). Specs must own their fixtures.
+  const Q = 5;
+  const src = await createSkuPurchase(page, db, Q);
+  expect(src.skuId, 'fixture purchase must be SKU-keyed for the phantom-row check').not.toBeNull();
 
   const dst = await db.queryOne<{ loc_name: string; floor_name: string }>(
     `SELECT l.name AS loc_name, f.name AS floor_name
      FROM location_floors f JOIN locations l ON l.id = f.location_id
      WHERE f.id <> $1 AND l.status = 'active' AND f.status = 'active'
      LIMIT 1`,
-    [src!.floor_id],
+    [src.floor.id],
   );
   expect(dst, 'seed must provide a second floor to transfer into').not.toBeNull();
 
-  // 2) Drive the form with the derived names.
+  // 2) Drive the form with the minted lot.
   await gotoAndExpect(page, '/stock-transfers/new');
-  await selectByLabel(page, 'From Location', src!.loc_name);
-  await selectByLabel(page, 'From Floor', src!.floor_name);
+  await selectByLabel(page, 'From Location', src.location.name);
+  await selectByLabel(page, 'From Floor', src.floor.name);
   // Source picker's aria-label is "Pick stock" (stock-transfer-form.page.tsx
   // <TransferSourcePicker ariaLabel="Pick stock" .../>). Option labels are built
   // by positionLabel() in TransferSourcePicker.tsx as
   // "<lotNumber> · <qualityName> · <sku|—> · <balance> <unit> · <processedTypes>",
   // so a substring match on the raw lot number selects the right option.
-  await selectByAriaLabel(page, 'Pick stock', src!.lot_number);
+  await selectByAriaLabel(page, 'Pick stock', src.lotNumber);
   await selectByLabel(page, 'To Location', dst!.loc_name);
   await selectByLabel(page, 'To Floor', dst!.floor_name);
-  await fillByLabel(page, 'Quantity', '5');
+  await fillByLabel(page, 'Quantity', String(Q));
 
   // 3) Assert the delta on the SAME key we selected.
-  const fromKey = { lotNumber: src!.lot_number, skuId: src!.sku_id, floorId: src!.floor_id };
+  const fromKey = { lotNumber: src.lotNumber, skuId: src.skuId, floorId: src.floor.id };
   const { delta } = await db.ledgerDelta(fromKey, async () => {
     // Submit button text is "Create Transfer" on the new-stock-transfer form.
     await clickButton(page, 'Create Transfer');
@@ -74,12 +46,12 @@ test('transfer moves stock floor→floor with SKU preserved and no phantom row',
     await expect(page).toHaveURL(/\/stock-transfers$/);
   });
 
-  // Bug #1: create succeeded + navigated. Bug #2: from-floor dropped by 5, and no
-  // phantom (lot, sku=null) row was created at that floor. The hardened source
-  // query above guarantees `src.sku_id` is a real SKU, so this is unconditional.
-  expect(delta).toBeCloseTo(-5, 3);
+  // Bug #1: create succeeded + navigated. Bug #2: from-floor dropped by Q, and no
+  // phantom (lot, sku=null) row was created at that floor. createSkuPurchase
+  // guarantees `src.skuId` is a real SKU, so this is unconditional.
+  expect(delta).toBeCloseTo(-Q, 3);
   expect(
-    await db.ledgerRowExists({ lotNumber: src!.lot_number, skuId: null, floorId: src!.floor_id }),
+    await db.ledgerRowExists({ lotNumber: src.lotNumber, skuId: null, floorId: src.floor.id }),
   ).toBe(false);
 });
 

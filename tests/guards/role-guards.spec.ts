@@ -42,7 +42,7 @@ const ROUTES: readonly GuardedRoute[] = [
     heading: 'New Job Work Challan In',
     allowedRoles: ['owner', 'storekeeper'],
   },
-  { path: '/designs/new', heading: 'New Design', allowedRoles: ['owner', 'storekeeper'] },
+  { path: '/designs/new', heading: 'New Beam Design', allowedRoles: ['owner', 'storekeeper'] },
   {
     path: '/beam-receipts/new',
     heading: 'New Beam Receipt',
@@ -50,12 +50,12 @@ const ROUTES: readonly GuardedRoute[] = [
   },
   {
     path: '/weaving-dispatches/new',
-    heading: 'New Weaving Dispatch',
+    heading: 'New Beam Issue',
     allowedRoles: ['owner', 'storekeeper'],
   },
   {
     path: '/weaving-ins/new',
-    heading: 'New Weaving In',
+    heading: 'New Fabric Receipt',
     allowedRoles: ['owner', 'storekeeper'],
   },
   {

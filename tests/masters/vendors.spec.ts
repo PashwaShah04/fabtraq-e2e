@@ -21,7 +21,7 @@ test('create → list → edit → persist a vendor', async ({ page }) => {
 
   // LIST — new vendor appears
   await gotoAndExpect(page, '/vendors');
-  await expect(page.getByRole('cell', { name })).toBeVisible();
+  await expect(page.getByRole('cell', { name, exact: true })).toBeVisible();
 
   // EDIT — row's action cell renders an "Edit" <button> (not a link), per
   // fabtraq-fe/src/features/vendors/columns.tsx. The TableRow has role="row"

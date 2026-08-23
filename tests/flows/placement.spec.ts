@@ -1,6 +1,6 @@
 import { test, expect } from '../../fixtures/test';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
 
 // ---------------------------------------------------------------------------
@@ -137,7 +137,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floor!.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     await clickButton(page, 'Save Placements');
     await expectToast(page, 'Stock placed successfully');
@@ -238,7 +238,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floor!.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // Floor-credit leg exactly as applyPlacementLedger writes it: the same
     // floor picked in the UI, so the assertion is a true single source of
@@ -425,7 +425,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floor!.name);
-    await fillByLabel(page, 'placement quantity 1', String(HALF));
+    await fillByLabelExact(page, 'placement quantity 1', String(HALF));
 
     const { delta: bucketDelta1 } = await db.ledgerDelta(bucketKey, async () => {
       await clickButton(page, 'Save Placements');
@@ -472,7 +472,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
     await selectByAriaLabel(page, 'Select floor', floor2!.name);
-    await fillByLabel(page, 'placement quantity 1', String(HALF));
+    await fillByLabelExact(page, 'placement quantity 1', String(HALF));
 
     const { delta: bucketDelta2 } = await db.ledgerDelta(bucketKey, async () => {
       await clickButton(page, 'Save Placements');

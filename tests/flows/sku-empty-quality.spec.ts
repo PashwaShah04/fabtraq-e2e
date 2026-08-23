@@ -3,7 +3,7 @@ import { test, expect } from '../../fixtures/test';
 import { codes } from '../../fixtures/codes';
 import { EMPTY_SKU_QUALITY_HINT, SENTINEL_OPTION_LABEL } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
-import { fillByLabel, selectByAriaLabel, clickButton } from '../../support/forms';
+import { fillByLabel, fillByLabelExact, selectByAriaLabel, clickButton } from '../../support/forms';
 import { expectToast } from '../../support/assert';
 import type { Db } from '../../fixtures/db';
 
@@ -115,7 +115,7 @@ test(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${location.code} – ${location.name}`);
     await selectByAriaLabel(page, 'Select floor', floor.name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     // The one place this file proves the hint doesn't stand between the
     // user and a valid entry: save with the sentinel and assert the

@@ -2,9 +2,9 @@ import { test, expect } from '../../fixtures/test';
 import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
@@ -116,7 +116,7 @@ async function openJwPosition(
   q: number,
 ): Promise<string> {
   await gotoAndExpect(page, '/jw-challans-out/new');
-  await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+  await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
   // getByRole (not getByLabel) — the outer Operations <label> wraps the whole
   // multi-select group; see jw-in-dyed.spec.ts note on the known FE quirk.
   // Deliberately NOT exact: the group's FIRST checkbox (Twisting) inherits the
@@ -129,7 +129,7 @@ async function openJwPosition(
   await fillByLabel(page, 'Net weight for line 1', String(q));
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select floor and location', `${src.loc_name} · ${src.floor_name}`);
-  await fillByLabel(page, 'placement quantity 1', String(q));
+  await fillByLabelExact(page, 'placement quantity 1', String(q));
   await clickButton(page, 'Save challan');
   await expectToast(page, /^Saved /);
   await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -195,7 +195,7 @@ async function receiveLot(
     await clickButton(page, 'Add placement');
     await selectByAriaLabel(page, 'Select location', `${floor.loc_code} – ${floor.loc_name}`);
     await selectByAriaLabel(page, 'Select floor', floor.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(q));
+    await fillByLabelExact(page, 'placement quantity 1', String(q));
   }
 
   await clickButton(page, 'Save receipt');
@@ -466,11 +466,11 @@ test(
     // Balanced (6 + 5 = 11 == net) — the old "orphan pull" failure mode is
     // impossible now: no coverage error despite the two sources carrying
     // different SKUs than the lot and each other. `source coverage, lots.N`
-    // is a bare <span aria-label>, not a form control, so use the attribute
-    // selector (repo convention, same as `selectByAriaLabel`'s locator) —
-    // `getByLabel` is reserved for form-control aria-labels elsewhere in
-    // this suite.
-    await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ covered');
+    // is a bare Badge <div aria-label>, not a form control, so use the
+    // attribute selector (repo convention, same as `selectByAriaLabel`'s
+    // locator) — `getByLabel` is reserved for form-control aria-labels
+    // elsewhere in this suite.
+    await expect(page.locator('[aria-label="source coverage, lots.0"]')).toHaveText('✓ Covered');
 
     // Place the full combined quantity via the always-visible Place-stock region.
     await clickButton(page, 'Add placement');
@@ -480,7 +480,7 @@ test(
       `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_TOTAL));
 
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
@@ -599,7 +599,7 @@ test(
       `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
 
     const floorKey = {
       qualityId: src!.quality_id,
@@ -743,7 +743,7 @@ test(
       `${receivingFloor!.loc_code} – ${receivingFloor!.loc_name}`,
     );
     await selectByAriaLabel(page, 'Select floor', receivingFloor!.floor_name);
-    await fillByLabel(page, 'placement quantity 1', String(Q_TOTAL));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_TOTAL));
 
     const jwRedBefore = await db.ledgerBalance(jwKeyRed);
     const jwBlueBefore = await db.ledgerBalance(jwKeyBlue);
@@ -775,6 +775,19 @@ test(
     // fix above makes the documented flow directly reachable, so a
     // work-around gesture would only obscure what's actually being tested.)
     await selectByAriaLabel(page, 'sku, lots.0', SENTINEL_OPTION_LABEL);
+
+    // The block toast ("Answer the SKU…", jw-challan-in-form.page.tsx:159 — NOT
+    // the inline SKU_ANSWER_REQUIRED FieldError, which stays on the field) is a
+    // sticky danger toast (errors never auto-dismiss since the 2026-08-22 toast
+    // redesign) and its bottom-right viewport covers the sticky bar's Save
+    // button — dismiss it the way a user would, by clicking it.
+    // exact: true — Radix also renders a hidden aria-live span prefixed
+    // "Notification …", which a substring match would catch too.
+    const blockToast = page.getByText('Answer the SKU for every lot before saving', {
+      exact: true,
+    });
+    await blockToast.click();
+    await expect(blockToast).toHaveCount(0);
 
     await clickButton(page, 'Save receipt');
     await expectToast(page, /^Saved /);

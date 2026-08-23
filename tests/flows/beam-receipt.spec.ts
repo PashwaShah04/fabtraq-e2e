@@ -3,11 +3,12 @@ import { env } from '../../fixtures/env';
 import { SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
 import { gotoAndExpect } from '../../support/nav';
 import {
-  fillByLabel,
+  fillByLabel, fillByLabelExact,
   selectByAriaLabel,
-  selectNativeByLabel,
+  selectByLabel,
   clickButton,
 } from '../../support/forms';
+import { confirmDialogAndWait } from '../../support/api';
 import { expectToast, captureDocNo } from '../../support/assert';
 import { createSentinelPurchase } from '../../support/sentinel-purchase';
 
@@ -323,7 +324,7 @@ test(
     //    pattern, operation = Warping) — opens the at-JW position the
     //    following JW-In drains.
     await gotoAndExpect(page, '/jw-challans-out/new');
-    await selectNativeByLabel(page, 'Job worker', `${jobWorkerA!.code} – ${jobWorkerA!.name}`);
+    await selectByLabel(page, 'Job worker', `${jobWorkerA!.code} – ${jobWorkerA!.name}`);
     await page.getByRole('checkbox', { name: 'Warping', exact: true }).check();
     await selectByAriaLabel(
       page,
@@ -339,7 +340,7 @@ test(
       'Select floor and location',
       `${src!.loc_name} · ${src!.floor_name}`,
     );
-    await fillByLabel(page, 'placement quantity 1', String(Q_WARP));
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_WARP));
     await clickButton(page, 'Save challan');
     await expectToast(page, /^Saved /);
     await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -429,7 +430,7 @@ test(
       qty: number,
     ): Promise<string> {
       await gotoAndExpect(page, '/jw-challans-out/new');
-      await selectNativeByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
+      await selectByLabel(page, 'Job worker', `${jobWorker.code} – ${jobWorker.name}`);
       await page.getByRole('checkbox', { name: 'Sizing', exact: true }).check();
       await selectByAriaLabel(
         page,
@@ -445,7 +446,7 @@ test(
         'Select floor and location',
         `${receivingFloor!.loc_name} · ${receivingFloor!.floor_name}`,
       );
-      await fillByLabel(page, 'placement quantity 1', String(qty));
+      await fillByLabelExact(page, 'placement quantity 1', String(qty));
       await clickButton(page, 'Save challan');
       await expectToast(page, /^Saved /);
       await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
@@ -579,16 +580,14 @@ test(
     await expect(page.getByText(challanNoB, { exact: true })).toBeVisible();
 
     // ── Cancel: reverses the ledger and rolls both challans back to 'sent'.
-    // No success toast on cancel (handleCancel just calls mutate()) — wait
-    // deterministically on the POST .../cancel response instead.
-    const [cancelResponse] = await Promise.all([
-      page.waitForResponse(
-        (res) =>
-          res.request().method() === 'POST' &&
-          res.url().includes(`/beam-receipts/${receiptId}/cancel`),
-      ),
-      clickButton(page, 'Cancel receipt'),
-    ]);
+    // The detail page now interposes a ConfirmDialog (2026-08-22 UI wave) —
+    // same alertdialog-confirm shape as weaving-in/fabric-taka, so drive it
+    // via the shared confirmDialogAndWait helper. Still no success toast.
+    const cancelResponse = await confirmDialogAndWait(
+      page,
+      'Cancel receipt',
+      /\/beam-receipts\/[^/]+\/cancel$/,
+    );
     expect(cancelResponse.status()).toBe(200);
 
     const afterCancelA = await db.ledgerBalance(keyA);
@@ -958,8 +957,7 @@ test('receipt register rows are clickable through to the detail page (spec 2026-
   await gotoAndExpect(page, '/beam-receipts');
   const row = page.getByRole('row', { name: receipt!.entry_no });
   await expect(row).toBeVisible();
-  // The whole row is clickable; the View link stays as the keyboard path.
-  await expect(row.getByRole('link', { name: 'View' })).toBeVisible();
+  // The whole row is clickable — the per-row View link/button was removed.
   await row.getByText(receipt!.entry_no, { exact: true }).click();
   await expect(page).toHaveURL(new RegExp(`/beam-receipts/${receipt!.id}$`));
   await expect(page.getByRole('heading', { name: receipt!.entry_no })).toBeVisible();
