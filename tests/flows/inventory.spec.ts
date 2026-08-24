@@ -3,7 +3,7 @@ import { gotoAndExpect } from '../../support/nav';
 import { createSentinelPurchase } from '../../support/sentinel-purchase';
 
 // Inventory is a pure read view over `stock_ledger` — no create/edit here.
-// Rewritten for the Stock Balance overview redesign (B-015,
+// Rewritten for the inventory overview redesign (formerly "Stock Balance"; B-015,
 // docs/superpowers/specs/2026-07-22-stock-balance-overview-design.md, D3-D5):
 // the old per-position `/inventory` table (Location/Floor filters, one row
 // per physical position) is gone; `/inventory` is now a stock-item OVERVIEW

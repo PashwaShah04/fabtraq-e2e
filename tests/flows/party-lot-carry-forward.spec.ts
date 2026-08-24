@@ -253,7 +253,7 @@ test(
     expect(item2!.lot_no).not.toBe(srcB.lot_number);
 
     // Visible in the lot listing — the surface a user actually reads. The
-    // Stock Balance redesign (B-015) moved the per-lot list to
+    // inventory overview redesign (B-015) moved the per-lot list to
     // /inventory/lots (/inventory is now the quality+SKU overview); the
     // exact lotNumber filter isolates this row regardless of other DB
     // activity (same idiom as placement.spec.ts).

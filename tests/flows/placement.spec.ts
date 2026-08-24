@@ -35,7 +35,7 @@ import { expectToast } from '../../support/assert';
 //    the unplaced remainder at the "bucket" position
 //    (locationId=NULL, floorId=NULL, jobWorkerId=NULL), transactionType
 //    unchanged ('purchase' / 'challan_in'). This is what makes pending stock
-//    show up as an "Awaiting placement" row in Stock Balance / Lots
+//    show up as an "Awaiting placement" row in Inventory / Lots
 //    immediately after create, before anyone visits /place-stock.
 //
 // 2. Queue placement (design §3.2, the actual bug fix) — `PlaceStockService.
@@ -376,7 +376,7 @@ test(
     expect(await db.ledgerBalance(floorKey)).toBeCloseTo(0, 3);
     expect(await db.ledgerBalance(floor2Key)).toBeCloseTo(0, 3);
 
-    // ── Step 2: Stock Balance OVERVIEW (B-015 redesign) — this page now
+    // ── Step 2: Inventory OVERVIEW (B-015 redesign) — this page now
     // shows one row per (quality, sku, processedTypes, unit) with a Custody
     // split column, not a per-position "Awaiting placement" row; it also has
     // no SKU filter any more (D3), so filter by quality only. The "Unplaced"
