@@ -44,9 +44,9 @@ Expect `false`. Confirm `git status` is clean of `package.json`/lockfile changes
 
 Append to the `POST /jw-challans-out` describe. Each case owns its lot number and transaction id.
 
-1. **`rejects a zero-netWeight item and writes no ledger rows (JWO-2026-27-015 shape)`** — seed a raw lot; POST with `netWeight: 0`, `grossWeight: 10`, `placements: []`. Expect **422**. Assert zero `stock_ledger` rows for that lot AND zero `jw_challans_out` rows created — a rejection that still persisted a header is the bug in a different costume.
-2. **`rejects an item with no placements`** — positive `netWeight`, `placements: []` → 422.
-3. **`rejects gross weight below net weight`** — `netWeight: 10, grossWeight: 9` → 422.
+1. **`rejects a zero-netWeight item and writes no ledger rows (JWO-2026-27-015 shape)`** — seed a raw lot; POST with `netWeight: 0`, `grossWeight: 10`, `placements: []`. Expect **400**. Assert zero `stock_ledger` rows for that lot AND zero `jw_challans_out` rows created — a rejection that still persisted a header is the bug in a different costume.
+2. **`rejects an item with no placements`** — positive `netWeight`, `placements: []` → 400.
+3. **`rejects gross weight below net weight`** — `netWeight: 10, grossWeight: 9` → 400.
 4. **Positive control: `accepts a normal positive item`** — `netWeight: 12` with one matching placement → 201, ledger row written with `out_quantity = 12`. Without this the suite could pass by rejecting everything.
 
 **Step 2 — run before Task 0's tarball is applied** to confirm cases 1-3 return 201 against published shared, proving they exercise the new guards rather than passing vacuously. Then apply Task 0 and re-run.
@@ -59,8 +59,8 @@ Append to the `POST /jw-challans-out` describe. Each case owns its lot number an
 
 **Files:** `tests/integration/jw-challan-in*.routes.test.ts` (pick the file matching the existing create-path tests). No `src/` change.
 
-1. `netWeight: 0` on a yarn item → 422, zero ledger rows, zero challan rows.
-2. A source with `consumedQty: 0` → 422 (D1).
+1. `netWeight: 0` on a yarn item → 400, zero ledger rows, zero challan rows.
+2. A source with `consumedQty: 0` → 400 (D1).
 3. **Regression:** a source with `wastage: 0` and `stillAtJwQty: 0` but positive `consumedQty` → **201**. These fields keep accepting zero; this is the case that catches over-tightening.
 
 **Commit:** `test(jw-in): zero netWeight and zero consumedQty rejected; zero wastage still accepted (spec 2026-08-24 §5, D1)`
@@ -90,7 +90,7 @@ Copy spec + four plans byte-for-byte from the repo-root `docs/`. Two prettier pa
 ## Self-review against spec
 
 - [ ] `git diff main --stat -- src` is empty.
-- [ ] Every rejection case asserts BOTH 422 and zero rows persisted.
+- [ ] Every rejection case asserts BOTH 400 and zero rows persisted.
 - [ ] Every group has a positive control.
 - [ ] Non-vacuity shown by running against published shared first.
 - [ ] `fabtraq_dev` re-seeded, user warned.

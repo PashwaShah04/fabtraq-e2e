@@ -225,7 +225,7 @@ section is written. Consequence, stated plainly: BE and FE resolve the published
 integration tests and e2e specs here pass only against a locally-linked build.
 
 **This is a tightening of accepted input.** Any client currently sending 0 will
-start getting a 422. Per §1.5 nothing in the data suggests a real caller does
+start getting a 400. Per §1.5 nothing in the data suggests a real caller does
 this, and the FE never offers it as a deliberate action — but it is a breaking
 change for an API consumer, and belongs in the release notes when the bump
 happens.
@@ -237,13 +237,18 @@ happens.
 | Gate | What proves it |
 |---|---|
 | shared unit | Per-field cases: 0 rejected, negative rejected, positive accepted, for all seven fields. Boundary cases for §3.3: gross absent / gross 0 / gross === net / gross < net. `.min(1)` on outbound placements. Regression cases proving `wastage`, `stillAtJwQty` and `remainingQty` still accept 0 |
-| BE integration | `POST /jw-challans-out` with `netWeight: 0` → 422, **and zero `stock_ledger` rows written**. Same for `POST /jw-challans-in` with a zero item and with a zero-`consumedQty` source. A positive control alongside each, so the tests cannot pass by rejecting everything |
-| FE | Existing suite green. The forms must surface the new 422s as field errors, not as an unhandled toast — verified live, since a validation change that produces a dead-end error screen is a regression even with green tests |
+| BE integration | `POST /jw-challans-out` with `netWeight: 0` → **400**, **and zero `stock_ledger` rows and zero challan headers written**. Same for `POST /jw-challans-in` with a zero item and with a zero-`consumedQty` source. A positive control alongside each, so the tests cannot pass by rejecting everything |
+| FE | Existing suite green. The forms must surface the new 400s as field errors, not as an unhandled toast — verified live, since a validation change that produces a dead-end error screen is a regression even with green tests |
 | e2e (live) | Negative case: fill a JW-Out with quantity 0, attempt save, assert the specific field error appears and **no challan row was created**. Asserted against the DB, not the toast |
 | docs | This spec + plans mirrored across all four repos |
 
+**Status code:** schema rejections surface as **400** from the validation
+middleware, not 422 — 422 is reserved for `BusinessRuleError` raised by the
+service *after* parsing succeeds. Since all four guards live in the schema,
+every case in this spec is a 400.
+
 The negative tests are the easy ones to write vacuously. Each must assert the
-**specific** error (`422` + the field path), not merely "it failed", and must
+**specific** error (`400` + the field path), not merely "it failed", and must
 assert zero rows written — a rejection that still wrote a ledger row is the bug
 in a different costume.
 

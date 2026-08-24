@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task.
 
-**Goal:** Make sure the new 422s land as inline field errors, not as a dead-end toast — and prove it live, not just with green tests.
+**Goal:** Make sure the new 400s land as inline field errors, not as a dead-end toast — and prove it live, not just with green tests.
 
 **Architecture:** The forms already resolve the shared schemas through their resolvers, so the new rules apply client-side automatically. The risk is NOT that validation fails to fire; it is that it fires somewhere the user cannot see. A guard that blocks Save with no visible reason is a worse user experience than the bug it fixes. That is what this plan verifies.
 
@@ -29,7 +29,7 @@ npm run lint && npx tsc --noEmit && npm run test && npm run build
 
 For each of the four affected forms — JW-Challan-Out, JW-Challan-In, Yarn Purchase, Fabric Taka (weaving-in) — establish:
 
-1. Which resolver each uses, and whether it is the CREATE schema carrying the new guards (some forms use a looser form-schema and only validate on submit — if so, the error arrives as a server 422, not a client-side field error, and Task 3 is where that shows up).
+1. Which resolver each uses, and whether it is the CREATE schema carrying the new guards (some forms use a looser form-schema and only validate on submit — if so, the error arrives as a server 400, not a client-side field error, and Task 3 is where that shows up).
 2. Where a `path: ['placements']` issue renders. The netWeight guard reports on `netWeight`, which has a visible field; the new placements guard reports on `placements`, which is an ARRAY — if no error slot is bound to it, the message is swallowed and Save fails silently. **This is the single most likely regression in this change.**
 3. Same question for `path: ['grossWeight']`.
 
@@ -62,7 +62,7 @@ For JW-Challan-Out, drive the real form and screenshot each:
 
 Repeat 1 for JW-Challan-In and Yarn Purchase (spot-check, not exhaustive).
 
-A blocked Save with no visible reason is a FAILURE of this task even if the API correctly returned 422.
+A blocked Save with no visible reason is a FAILURE of this task even if the API correctly returned 400.
 
 ---
 
