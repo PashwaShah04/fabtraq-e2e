@@ -691,6 +691,16 @@ test(
          AND l.status = 'active' AND f.status = 'active'
          AND q.status = 'active' AND sku.status = 'active'
          AND cardinality(s.processed_types) = 0
+         -- Row-level cardinality = 0 is NOT enough to call a LOT raw: a
+         -- processed lot's own challan_out legs also carry processed_types
+         -- = {}, so filtering rows would let e.g. the warped lot minted by
+         -- the mixed-challan case above qualify while its LATEST row says
+         -- {warping}. Exclude any lot carrying processing on ANY row.
+         AND NOT EXISTS (
+           SELECT 1 FROM stock_ledger x
+           WHERE x.lot_number = s.lot_number
+             AND cardinality(x.processed_types) > 0
+         )
        GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
                 sku.name, sku.shade_number, l.name, f.name, f.id
        HAVING SUM(s.in_quantity - s.out_quantity) >= $1
@@ -700,18 +710,51 @@ test(
     );
     expect(src, 'seed must provide a raw lot with >= Q_SENT balance').not.toBeNull();
 
+    // Lot distinctness from the mixed-challan case above, which takes the
+    // first raw lot by ASC with balance >= 30. Asserted rather than assumed:
+    // on a seed with only one qualifying raw lot, ASC and DESC collide and the
+    // two specs would silently share stock.
+    const mixedCaseLot = await db.queryOne<{ lot_number: string }>(
+      `SELECT s.lot_number
+       FROM stock_ledger s
+       JOIN location_floors f ON f.id = s.floor_id
+       JOIN locations l ON l.id = f.location_id
+       JOIN yarn_qualities q ON q.id = s.quality_id
+       JOIN yarn_skus sku ON sku.id = s.sku_id
+       WHERE s.lot_number IS NOT NULL AND s.sku_id IS NOT NULL
+         AND s.job_worker_id IS NULL
+         AND l.status = 'active' AND f.status = 'active'
+         AND q.status = 'active' AND sku.status = 'active'
+         AND cardinality(s.processed_types) = 0
+       GROUP BY s.lot_number
+       HAVING SUM(s.in_quantity - s.out_quantity) >= 30
+       ORDER BY s.lot_number
+       LIMIT 1`,
+    );
+    expect(
+      src!.lot_number,
+      'this spec must not share its source lot with the mixed-challan case above',
+    ).not.toBe(mixedCaseLot?.lot_number);
+
     // The assertion that makes this test non-vacuous: the lot really is raw.
     // Without it the case could pass on a warped lot and prove nothing about
     // the relaxed predicate.
-    const priorState = await db.queryOne<{ processed_types: string[] }>(
+    // ORDER BY created_at DESC alone, matching what
+    // findLatestProcessedStatesByLot (prisma-inventory.service.ts) actually
+    // uses — ordering differently here could pass while BE reads another row.
+    //
+    // processed_types is a Postgres ENUM array, and node-pg has no type parser
+    // for enum arrays — it hands back the raw array literal ('{}', '{warping}')
+    // as a STRING, not a parsed JS array. Typed and asserted as such.
+    const priorState = await db.queryOne<{ processed_types: string }>(
       `SELECT processed_types FROM stock_ledger
-       WHERE lot_number = $1 ORDER BY date DESC, created_at DESC LIMIT 1`,
+       WHERE lot_number = $1 ORDER BY created_at DESC LIMIT 1`,
       [src!.lot_number],
     );
     expect(
       priorState!.processed_types,
       'the source lot must carry NO processing — this is a raw-yarn-to-sizing test',
-    ).toEqual([]);
+    ).toBe('{}');
 
     const skuOptionLabel =
       src!.sku_shade_number !== null && src!.sku_shade_number !== ''
