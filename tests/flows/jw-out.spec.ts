@@ -7,7 +7,7 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
-import { createSentinelPurchase } from '../../support/sentinel-purchase';
+import { createSentinelPurchase, createSkuPurchase } from '../../support/sentinel-purchase';
 
 // JW Challan Out moves stock OUT of a floor position and INTO an at-job-worker
 // position (jw-challan-out.service.ts `applyChallanOutLedger` writes two ledger
@@ -264,5 +264,102 @@ test(
     );
     expect(itemsAfter?.n).toBe(itemsBefore?.n);
     expect(ledgerAfter?.n).toBe(ledgerBefore?.n);
+  },
+);
+
+// Positive quantities — the JWO-2026-27-015 defect, refused end-to-end
+// (spec docs/superpowers/specs/2026-08-24-positive-quantities-design.md §3, §5).
+//
+// That challan was saved with net 0 / gross 10 / no placements: it dispatched
+// nothing, wrote no ledger rows, could never be received against, sat in the
+// awaiting-placement bucket forever, and still burned a JWO- number. Two rules
+// composed into the hole — quantitySchema was non-negative, and the placement
+// conservation refinement is vacuous at 0 === 0.
+//
+// This spec asserts the SPECIFIC visible error and that NOTHING was persisted.
+// A version that only checked "save didn't navigate" would pass even if the
+// row were written, which is the failure it exists to catch.
+//
+// Ends with a positive control in the same test: the corrected form must still
+// save. A guard that blocks everything is not a fix.
+//
+// REQUIRES the fabtraq-shared build carrying positiveQuantitySchema — against
+// the published 1.21.0 the zero item is accepted and the error never appears.
+//
+// FIXTURE OWNERSHIP: creates its own stock via createSkuPurchase rather than
+// probing for "whichever seeded lot has enough balance". An earlier draft took
+// the last job worker + last raw lot by code — the same pair beam-receipt.spec
+// picks for its raw-sizing case — and the two specs' at-JW ledger keys
+// collided, so that spec read a balance of 19 where it expected 9. Passing in
+// isolation and failing in the full suite is exactly the shape that rule
+// exists to prevent.
+test(
+  'a zero-quantity JW challan-out is refused and leaves no row behind',
+  async ({ page, db }) => {
+    const Q = 10;
+
+    const purchase = await createSkuPurchase(page, db, 50);
+    const quality = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM yarn_qualities WHERE id = $1`,
+      [purchase.qualityId],
+    );
+    expect(quality, 'the purchase must reference a real quality').not.toBeNull();
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide an active job worker').not.toBeNull();
+
+    const countChallans = async (): Promise<number> => {
+      const row = await db.queryOne<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM jw_challans_out`,
+      );
+      return Number(row!.n);
+    };
+    const before = await countChallans();
+
+    await gotoAndExpect(page, '/jw-challans-out/new');
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await page.getByLabel('Twisting').check();
+    await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
+    await selectByAriaLabel(page, 'Source lot for line 1', purchase.lotNumber);
+
+    // The exact JWO-2026-27-015 shape: 0 net, 10 gross, no placement.
+    await fillByLabel(page, 'Net weight for line 1', '0');
+    await fillByLabel(page, 'Gross weight for line 1', '10');
+
+    await clickButton(page, 'Save challan');
+
+    // A VISIBLE field error, in the codebase's own [data-field-error] region.
+    // Without this the spec would pass on a form that silently does nothing —
+    // which is precisely the regression the placements .min(1) guard caused in
+    // PlacementFieldArray before it was fixed to render array-level errors.
+    await expect(page.locator('[data-field-error]').first()).toBeVisible();
+    await expect(page).toHaveURL(/\/jw-challans-out\/new$/);
+
+    // Nothing persisted — neither a header nor a ledger leg.
+    expect(await countChallans()).toBe(before);
+    const ledgerRow = await db.queryOne<{ id: string }>(
+      `SELECT id FROM stock_ledger
+       WHERE lot_number = $1 AND transaction_type = 'challan_out'`,
+      [purchase.lotNumber],
+    );
+    expect(ledgerRow, 'a refused challan must not write a ledger leg').toBeNull();
+
+    // ── Positive control: correct the form and it must save cleanly. ─────────
+    await fillByLabel(page, 'Net weight for line 1', String(Q));
+    await fillByLabel(page, 'Gross weight for line 1', String(Q + 2));
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select floor and location',
+      `${purchase.location.name} · ${purchase.floor.name}`,
+    );
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
+    await clickButton(page, 'Save challan');
+
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
+    expect(await countChallans()).toBe(before + 1);
   },
 );
