@@ -619,6 +619,219 @@ test(
   },
 );
 
+// Beam Receipt — sizing_jw origin off a RAW lot, no warping leg at all
+// (spec docs/superpowers/specs/2026-08-24-raw-yarn-sizing-design.md §3, §5).
+//
+// The L18 `sizing` predicate used to demand `warping` in the source lot's
+// processedTypes (fabtraq-shared primitives/job-work.ts), which is why the
+// mixed-challan test above has to manufacture a warped lot through a
+// warping OUT + warping IN before it can size anything. That precondition is
+// gone: any pre-beam lot is a valid sizing input.
+//
+// This case is that same chain with BOTH warping legs deleted — a raw floor
+// lot goes straight out for sizing and comes back as a beam. Per spec D2 the
+// warped stage is NOT recorded implicitly: the source lot's processed_types
+// stays empty, and this test asserts that before the OUT, which is what keeps
+// it from silently passing on a warped lot and proving nothing.
+//
+// REQUIRES the fabtraq-shared build carrying the relaxed predicate. The
+// published 1.21.0 still rejects raw-lot sizing (spec §4 / D3) — against the
+// registry copy the source lot never appears in the picker and the OUT step
+// fails. See docs/plans/2026-08-24-raw-yarn-sizing-be.md Task 0.
+//
+// Fixture ownership: this case takes the LAST active job worker by code and a
+// raw lot ordered DESC, so it shares neither with the mixed-challan case above
+// (which takes the first two by code, lot ordered ASC). Distinctness is
+// asserted, not assumed.
+test(
+  'raw lot goes straight to sizing with no warping leg, through to a beam receipt',
+  async ({ page, db }) => {
+    const Q_SENT = 9;
+    const Q_RECV = 9;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code DESC LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide an active job worker').not.toBeNull();
+
+    const firstTwo = await db.queryMany<{ id: string }>(
+      `SELECT id FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 2`,
+    );
+    expect(
+      firstTwo.map((w) => w.id),
+      'this spec must not share a job worker with the mixed-challan case above',
+    ).not.toContain(jobWorker!.id);
+
+    // A RAW floor lot — cardinality(processed_types) = 0. Ordered DESC so it
+    // is not the same row the mixed-challan case consumes.
+    const src = await db.queryOne<{
+      lot_number: string;
+      sku_id: string;
+      quality_id: string;
+      quality_code: string;
+      quality_name: string;
+      sku_name: string;
+      sku_shade_number: string | null;
+      loc_name: string;
+      floor_name: string;
+      floor_id: string;
+    }>(
+      `SELECT s.lot_number, s.sku_id, s.quality_id,
+              q.code AS quality_code, q.name AS quality_name,
+              sku.name AS sku_name, sku.shade_number AS sku_shade_number,
+              l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
+       FROM stock_ledger s
+       JOIN location_floors f ON f.id = s.floor_id
+       JOIN locations l ON l.id = f.location_id
+       JOIN yarn_qualities q ON q.id = s.quality_id
+       JOIN yarn_skus sku ON sku.id = s.sku_id
+       WHERE s.lot_number IS NOT NULL
+         AND s.sku_id IS NOT NULL
+         AND s.job_worker_id IS NULL
+         AND l.status = 'active' AND f.status = 'active'
+         AND q.status = 'active' AND sku.status = 'active'
+         AND cardinality(s.processed_types) = 0
+       GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
+                sku.name, sku.shade_number, l.name, f.name, f.id
+       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
+       ORDER BY s.lot_number DESC
+       LIMIT 1`,
+      [Q_SENT],
+    );
+    expect(src, 'seed must provide a raw lot with >= Q_SENT balance').not.toBeNull();
+
+    // The assertion that makes this test non-vacuous: the lot really is raw.
+    // Without it the case could pass on a warped lot and prove nothing about
+    // the relaxed predicate.
+    const priorState = await db.queryOne<{ processed_types: string[] }>(
+      `SELECT processed_types FROM stock_ledger
+       WHERE lot_number = $1 ORDER BY date DESC, created_at DESC LIMIT 1`,
+      [src!.lot_number],
+    );
+    expect(
+      priorState!.processed_types,
+      'the source lot must carry NO processing — this is a raw-yarn-to-sizing test',
+    ).toEqual([]);
+
+    const skuOptionLabel =
+      src!.sku_shade_number !== null && src!.sku_shade_number !== ''
+        ? `${src!.sku_name} — ${src!.sku_shade_number}`
+        : src!.sku_name;
+
+    // ── Step 1: sizing JW-Challan-Out directly on the raw lot.
+    await gotoAndExpect(page, '/jw-challans-out/new');
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await page.getByRole('checkbox', { name: 'Sizing', exact: true }).check();
+    await selectByAriaLabel(
+      page,
+      'Quality for line 1',
+      `${src!.quality_code} – ${src!.quality_name}`,
+    );
+    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+
+    // The FE half of the change: SourceLotPicker filters through
+    // isValidInputState, so the raw lot must now be OFFERED. Selecting it by
+    // label would fail loudly if it were still excluded, but assert the
+    // option's presence explicitly so a failure reads as "raw lot missing from
+    // picker" rather than a generic select timeout.
+    await selectByAriaLabel(page, 'Source lot for line 1', src!.lot_number);
+
+    await fillByLabel(page, 'Net weight for line 1', String(Q_SENT));
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select floor and location',
+      `${src!.loc_name} · ${src!.floor_name}`,
+    );
+    await fillByLabelExact(page, 'placement quantity 1', String(Q_SENT));
+    await clickButton(page, 'Save challan');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
+    const challanNo = await captureDocNo(
+      page.getByRole('main'),
+      /\bJWO-\d{4}-\d{2}-\d{3,}\b/,
+    );
+
+    // ── Step 2: beam receipt, sizing_jw origin, against that OUT item.
+    await gotoAndExpect(page, '/beam-receipts/new');
+    await page
+      .getByRole('group', { name: 'beam origin' })
+      .getByRole('button', { name: 'Sizing JW', exact: true })
+      .click();
+
+    const beamNumber = `BM-RAWSZ-${Date.now()}`;
+    await fillByLabel(page, 'beam number, items.0', beamNumber);
+    await fillByLabel(page, 'net weight, items.0', String(Q_RECV));
+    await page.getByRole('button', { name: 'Pick eligible out item' }).nth(0).click();
+    await page.getByRole('option').filter({ hasText: challanNo }).first().click();
+
+    // at-JW position opened by the sizing OUT — keyed on the RAW lot number
+    // (no warped lot exists in this chain).
+    const key = {
+      qualityId: src!.quality_id,
+      skuId: src!.sku_id,
+      lotNumber: src!.lot_number,
+      jobWorkerId: jobWorker!.id,
+      floorId: null,
+      locationId: null,
+    };
+    const before = await db.ledgerBalance(key);
+    expect(before).toBeCloseTo(Q_SENT, 3);
+
+    await clickButton(page, 'Save beam receipt');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/beam-receipts\/[^/]+$/);
+
+    const entryNo = await captureDocNo(page.getByRole('main'), /\bBRC-\d{4}-\d{2}-\d{3,}\b/);
+    const receiptId = page.url().split('/').pop();
+
+    // ── Assert against stock_ledger, not the inventory summary view.
+    const after = await db.ledgerBalance(key);
+    expect(after - before).toBeCloseTo(-Q_RECV, 3);
+
+    const ledgerRow = await db.queryOne<{
+      out_quantity: string;
+      job_worker_id: string;
+      lot_number: string;
+    }>(
+      `SELECT sl.out_quantity, sl.job_worker_id, sl.lot_number
+       FROM stock_ledger sl
+       JOIN beam_receipt_items bri ON bri.id = sl.transaction_item_id
+       WHERE bri.beam_receipt_id = $1 AND bri.beam_number = $2 AND sl.transaction_type = 'beam_receipt'`,
+      [receiptId, beamNumber],
+    );
+    expect(ledgerRow, 'the beam must drain a beam_receipt ledger row').not.toBeNull();
+    expect(Number(ledgerRow!.out_quantity)).toBeCloseTo(Q_RECV, 3);
+    expect(ledgerRow!.job_worker_id).toBe(jobWorker!.id);
+    expect(ledgerRow!.lot_number).toBe(src!.lot_number);
+
+    // The Beam entity is minted HERE, at the sizing receipt — spec §1.2. This
+    // is the fact that made the whole change cheap, so it is asserted.
+    const beamRow = await db.queryOne<{ status: string; beam_origin: string }>(
+      `SELECT b.status, b.beam_origin
+       FROM beams b
+       JOIN beam_receipt_items bri ON bri.id = b.beam_receipt_item_id
+       WHERE bri.beam_receipt_id = $1 AND bri.beam_number = $2`,
+      [receiptId, beamNumber],
+    );
+    expect(beamRow, 'a beam row must be minted by the sizing receipt').not.toBeNull();
+    expect(beamRow!.status).toBe('received');
+    expect(beamRow!.beam_origin).toBe('sizing_jw');
+
+    const challanStatus = await db.queryOne<{ status: string }>(
+      `SELECT status FROM jw_challans_out WHERE challan_no = $1`,
+      [challanNo],
+    );
+    expect(challanStatus!.status).toBe('fully_received');
+
+    // Fresh navigation — server state, not client-side post-Save state.
+    await gotoAndExpect(page, `/beam-receipts/${receiptId}`);
+    await expect(page.getByRole('heading', { name: entryNo })).toBeVisible();
+    await expect(page.getByText(challanNo, { exact: true })).toBeVisible();
+  },
+);
+
+
 // E5 (spec 2026-07-27 D2a) — the per-beam yarn row's SKU answer is REQUIRED
 // (a real SKU or the "No shade / greige" sentinel), enforced by a per-row
 // `beamReceiptYarnInputSchema.safeParse` inside `validateInHouseComposition`
