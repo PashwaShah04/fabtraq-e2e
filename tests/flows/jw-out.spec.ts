@@ -266,3 +266,138 @@ test(
     expect(ledgerAfter?.n).toBe(ledgerBefore?.n);
   },
 );
+
+// Positive quantities — the JWO-2026-27-015 defect, refused end-to-end
+// (spec docs/superpowers/specs/2026-08-24-positive-quantities-design.md §3, §5).
+//
+// That challan was saved with net 0 / gross 10 / no placements: it dispatched
+// nothing, wrote no ledger rows, could never be received against, sat in the
+// awaiting-placement bucket forever, and still burned a JWO- number. Two rules
+// composed into the hole — quantitySchema was non-negative, and the placement
+// conservation refinement is vacuous at 0 === 0.
+//
+// This spec asserts the SPECIFIC visible error and that NOTHING was persisted.
+// A version that only checked "save didn't navigate" would pass even if the
+// row were written, which is the failure it exists to catch.
+//
+// Ends with a positive control in the same test: the corrected form must still
+// save. A guard that blocks everything is not a fix.
+//
+// REQUIRES the fabtraq-shared build carrying positiveQuantitySchema — against
+// the published 1.21.0 the zero item is accepted and step 4 fails.
+//
+// Fixture ownership: takes the LAST active job worker by code, so it shares
+// none with the two cases above (which take the first).
+test(
+  'a zero-quantity JW challan-out is refused and leaves no row behind',
+  async ({ page, db }) => {
+    const Q = 10;
+
+    const jobWorker = await db.queryOne<{ id: string; code: string; name: string }>(
+      `SELECT id, code, name FROM job_workers WHERE status = 'active' ORDER BY code DESC LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide an active job worker').not.toBeNull();
+
+    const src = await db.queryOne<{
+      lot_number: string;
+      sku_id: string;
+      quality_code: string;
+      quality_name: string;
+      sku_name: string;
+      sku_shade_number: string | null;
+      loc_name: string;
+      floor_name: string;
+    }>(
+      `SELECT s.lot_number, s.sku_id, s.quality_id,
+              q.code AS quality_code, q.name AS quality_name,
+              sku.name AS sku_name, sku.shade_number AS sku_shade_number,
+              l.name AS loc_name, f.name AS floor_name
+       FROM stock_ledger s
+       JOIN location_floors f ON f.id = s.floor_id
+       JOIN locations l ON l.id = f.location_id
+       JOIN yarn_qualities q ON q.id = s.quality_id
+       JOIN yarn_skus sku ON sku.id = s.sku_id
+       WHERE s.lot_number IS NOT NULL AND s.sku_id IS NOT NULL
+         AND s.job_worker_id IS NULL
+         AND l.status = 'active' AND f.status = 'active'
+         AND q.status = 'active' AND sku.status = 'active'
+         AND cardinality(s.processed_types) = 0
+         AND NOT EXISTS (
+           SELECT 1 FROM stock_ledger x
+           WHERE x.lot_number = s.lot_number AND cardinality(x.processed_types) > 0
+         )
+       GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
+                sku.name, sku.shade_number, l.name, f.name
+       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
+       ORDER BY s.lot_number DESC
+       LIMIT 1`,
+      [Q],
+    );
+    expect(src, 'seed must provide a raw lot with enough balance').not.toBeNull();
+
+    const countChallans = async (): Promise<number> => {
+      const row = await db.queryOne<{ n: string }>(
+        `SELECT COUNT(*)::text AS n FROM jw_challans_out`,
+      );
+      return Number(row!.n);
+    };
+    const before = await countChallans();
+
+    const skuOptionLabel =
+      src!.sku_shade_number !== null && src!.sku_shade_number !== ''
+        ? `${src!.sku_name} — ${src!.sku_shade_number}`
+        : src!.sku_name;
+
+    await gotoAndExpect(page, '/jw-challans-out/new');
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    await page.getByLabel('Twisting').check();
+    await selectByAriaLabel(
+      page,
+      'Quality for line 1',
+      `${src!.quality_code} – ${src!.quality_name}`,
+    );
+    await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
+    await selectByAriaLabel(page, 'Source lot for line 1', src!.lot_number);
+
+    // The exact JWO-2026-27-015 shape: 0 net, 10 gross, no placement.
+    await fillByLabel(page, 'Net weight for line 1', '0');
+    await fillByLabel(page, 'Gross weight for line 1', '10');
+
+    await clickButton(page, 'Save challan');
+
+    // A VISIBLE field error, in the codebase's own [data-field-error] region.
+    // Without this assertion the spec would pass on a form that silently does
+    // nothing — which is exactly the regression the placements .min(1) guard
+    // introduced in PlacementFieldArray before it was fixed.
+    await expect(page.locator('[data-field-error]').first()).toBeVisible();
+
+    // Still on the form; no detail page.
+    await expect(page).toHaveURL(/\/jw-challans-out\/new$/);
+
+    // Nothing persisted — neither a header nor a ledger leg.
+    expect(await countChallans()).toBe(before);
+    const ledgerRow = await db.queryOne<{ id: string }>(
+      `SELECT id FROM stock_ledger
+       WHERE lot_number = $1 AND transaction_type = 'challan_out'
+         AND created_at > now() - interval '2 minutes'`,
+      [src!.lot_number],
+    );
+    expect(ledgerRow, 'a refused challan must not write a ledger leg').toBeNull();
+
+    // ── Positive control: correct the form and it must save cleanly. ─────────
+    await fillByLabel(page, 'Net weight for line 1', String(Q));
+    await fillByLabel(page, 'Gross weight for line 1', String(Q + 2));
+    await clickButton(page, 'Add placement');
+    await selectByAriaLabel(
+      page,
+      'Select floor and location',
+      `${src!.loc_name} · ${src!.floor_name}`,
+    );
+    await fillByLabelExact(page, 'placement quantity 1', String(Q));
+    await clickButton(page, 'Save challan');
+
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
+    expect(await countChallans()).toBe(before + 1);
+  },
+);
