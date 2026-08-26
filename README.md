@@ -70,6 +70,60 @@ E2E_BE_DIR=../be E2E_FE_DIR=../fe npx playwright test tests/flows/<spec>.spec.ts
 Omit both vars to fall back to the default `../fabtraq-be` / `../fabtraq-fe`
 layout.
 
+## Running against worktrees / an isolated database
+
+Ports 4000/5173 are the defaults `../fabtraq-be`/`../fabtraq-fe` run on for
+manual dev work — if those are occupied (e.g. a `main-preview` checkout
+running `npm run dev`), the suite's default `webServer` config will either
+fail to bind or, worse, boot successfully against THAT stack while your
+worktree's fix sits untested. A green run against the wrong stack and the
+live database is the worst outcome here — it looks like success. A worktree
+BE/FE pair also has no `.env` (only `.env.example`), so it needs every
+required var supplied explicitly. Full working invocation:
+
+```bash
+E2E_API_URL=http://localhost:4100 \
+E2E_BASE_URL=http://localhost:5273 \
+E2E_BE_DIR=../<your-be-worktree> \
+E2E_FE_DIR=../<your-fe-worktree> \
+E2E_PARSER_DIR=../../fabtraq-pdf-parser \
+DATABASE_URL='postgresql://fabtraq:fabtraq_dev@localhost:5432/<isolated_db>?schema=public' \
+JWT_SECRET='<32+ chars>' COOKIE_SECRET='<32+ chars>' CSRF_SECRET='<32+ chars>' \
+CORS_ORIGIN='http://localhost:5273' \
+VITE_API_BASE_URL='http://localhost:4100' \
+npx playwright test tests/flows/<spec>.spec.ts --project=setup --project=authed
+```
+
+Why each non-obvious variable is required:
+
+- **`E2E_API_URL`/`E2E_BASE_URL` (ports)** — pick ports nothing else is
+  using. Check first: `ss -ltnp | grep -E ':4100|:5273'` should be empty.
+  Defaulting to 4000/5173 when those are occupied is the dangerous failure
+  mode above, not a crash.
+- **`DATABASE_URL`** — a worktree BE has no `.env`, so this is the ONLY
+  source of the database connection; there is nothing to silently fall back
+  to `fabtraq_dev`. Use a dedicated DB (e.g. `fabtraq_test`, migrated via
+  `npm run db:reset` / seeded via `npm run db:seed` in the BE worktree with
+  the SAME `DATABASE_URL` exported), never the DB any dev server is using.
+- **`JWT_SECRET`/`COOKIE_SECRET`/`CSRF_SECRET`** — required by the BE's zod
+  env schema; with no `.env` the server refuses to boot without them
+  (any 32+ char string works for a throwaway run).
+- **`CORS_ORIGIN`** — the BE's schema default is hardcoded to
+  `http://localhost:5173`. Without setting it to match `E2E_BASE_URL`, the
+  FE's `/auth/me` call is CORS-blocked and `auth.setup` fails misleadingly
+  as "never redirects to `/login`" — it looks like an auth bug, not a CORS
+  mismatch.
+- **`VITE_API_BASE_URL`** — the FE *app itself* (not just the Playwright
+  client) needs to know the moved BE port; without it the FE keeps calling
+  the default port and `auth.setup` fails with
+  `expect(/\/login/) received "/vendors"`.
+- **`E2E_PARSER_DIR`** — `fabtraq-pdf-parser` lives at the repo root, not as
+  a worktree sibling; the default `../fabtraq-pdf-parser` resolves wrong
+  from inside `worktrees/<name>/e2e`. Use `../../fabtraq-pdf-parser`.
+
+After boot, confirm the backend actually answering on your chosen API port
+is the one you meant to test (not a leftover process from another run).
+
 ## Design & conventions
 
 - **Serial** (`workers: 1`, `fullyParallel: false`) — shared mutable Postgres +
