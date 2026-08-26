@@ -1194,3 +1194,32 @@ CI runs `npm run test:coverage`, so this is a latent flaky-red. Fix is to raise 
 `vitest.config.ts` (or per-suite) so the instrumented runs have headroom — **not** to lower a
 coverage threshold. Deliberately NOT changed inside the `sourcedFrom` workstream: touching the
 vitest config to get a green gate on someone else's flake is exactly the shortcut that hides it.
+
+## B-043 — `npm run e2e` silently targets `fabtraq_dev`, and its two halves can disagree
+
+**Status:** Open 2026-08-26. **Severity:** Medium (data-loss footgun).
+
+Two separate defaults decide which database an e2e run touches, and nothing checks they agree:
+
+- `package.json` `e2e` script resets/seeds through `E2E_BE_DIR` (default `../fabtraq-be`), so the
+  **server** uses that BE checkout's `.env`.
+- `fixtures/env.ts:3` defaults the **test client's** own pool to
+  `postgresql://…/fabtraq_dev`, independently.
+
+Two consequences, both hit on 2026-08-26:
+
+1. **Data loss.** A plain `npm run e2e` runs `db:reset && db:seed` against the developer's real
+   `fabtraq_dev`. That is the documented behaviour, but nothing warns at the point of use.
+2. **Mass phantom failures.** Pointing only the server at `fabtraq_test` (via `E2E_BE_DIR`) leaves
+   the fixtures reading `fabtraq_dev`: tests write through the API to one database and assert
+   against another. Observed result was **81 passed / 55 failed**, every failure a DB assertion
+   (e.g. a ledger delta of `0` where `-6` was expected) — indistinguishable from a real regression.
+   Setting `DATABASE_URL` to match the server's turned the same suite into **128 passed / 8 failed**.
+
+Fix: derive both from ONE source, and fail fast when they disagree — resolve the BE checkout's
+`DATABASE_URL` and assert `fixtures/env.ts` resolves to the same database before any spec runs,
+aborting with a clear message otherwise. Consider defaulting to `fabtraq_test` and requiring an
+explicit opt-in to run against `fabtraq_dev`.
+
+Also from the same session: `npm run e2e` piped into `tail` reports **`tail`'s** exit code, not the
+suite's — a red run reads as green. Never judge a run by a piped exit status.
