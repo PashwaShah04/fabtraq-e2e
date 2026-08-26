@@ -38,62 +38,29 @@ file proper design for later."
 
 **Origin:** 2026-05-19 S4 close-out (session `session-1779219341176`).
 Originally Sprint 4 §3.
-**Status:** **PARTIALLY SHIPPED (2026-08-21).** Client-side
-`@react-pdf/renderer` PDF generation landed in `fabtraq-fe`
-`src/features/challan-print/` — spec
-`docs/specs/2026-08-21-challan-pdf-design.md`. Covers JW-Challan Out (T2) and
-both weaving-dispatch documents (beam-issue challan + the dispatch-minted weft
-delivery challan). **Remaining scope:** Yarn Purchase entry (T1), JW-Challan
-In (T3A/B/C), plus 4 detail/list pages that still carry the raw-UUID-fallback
-display pattern over non-hydrated schemas — `jw-challan-in-detail`,
-`beam-receipt-detail`, `beam-detail`, and the `place-stock-queue`/placements
-columns — which need a future `fabtraq-shared` hydration bump (denormalised
-display-name fields, same convention as the challan-print data-gap fields)
-before they can gain a print path.
+**Status:** Deferred (pushed from S4)
 **Trigger to revisit:** before Phase 1 client UAT (S7), per user instruction
 L2626 "we need a consistent pdf before completing phase 1." If S7 ships
-without T1/T3 PDFs, this remains a blocker for those two surfaces.
+without PDFs, this becomes blocker.
 
-Today two transactional surfaces still use `window.print()` stubs (or no
-print path at all) that produce inconsistent browser-default output:
+Today three transactional surfaces use `window.print()` stubs that produce
+inconsistent browser-default output:
 
-1. Yarn Purchase entry (T1) — Sprint 2 detail page, `window.print()`, no
-   print CSS
-2. ~~JW-Challan Out (T2)~~ — **shipped 2026-08-21**, see above
+1. Yarn Purchase entry (T1) — Sprint 2 detail page
+2. JW-Challan Out (T2) — Sprint 3 detail page (has `@media print` stylesheet)
 3. JW-Challan In (T3A/B/C) — currently no print path at all
 
-**Proposal (superseded for T2, still open for T1/T3):** originally BE
-generates PDFs on-demand at `/yarn-purchases/:id/pdf`,
-`/jw-challans-out/:id/pdf`, `/jw-challans-in/:id/pdf`. T2 instead shipped as
-client-side generation (`usePrintChallan` → `ChallanPdf`, opened as a `blob:`
-URL) — a deliberate departure from the original BE-endpoint proposal, ruled
-by the engine decision below. T1/T3 are expected to follow the same
-client-side pattern rather than the original BE-PDF proposal, but that is not
-yet locked.
+**Proposal:** BE generates PDFs on-demand at `/yarn-purchases/:id/pdf`,
+`/jw-challans-out/:id/pdf`, `/jw-challans-in/:id/pdf`. Same renderer reused by
+Sprint 7 report PDFs.
 
-**Engine pick — RESOLVED for the shipped scope (2026-08-21):**
-`@react-pdf/renderer`, client-side, lazy-loaded — see
-`docs/specs/2026-08-21-challan-pdf-design.md` §1. This is a recorded
-departure from PRD §868's `wkhtmltopdf` pick: wkhtmltopdf is unmaintained and
-the project has no server deploy target, so server-side generation was ruled
-out in favour of client-side. `pdf-lib` / Puppeteer were the other options
-considered and not chosen (see spec §1 for the full grounds). T1/T3 should
-default to the same engine unless a spec phase for them finds a reason not
-to.
+**Engine pick deferred to spec phase:** `wkhtmltopdf` (PRD's pick, binary
+toolchain, mature) vs `pdf-lib` (npm-only, more code) vs Puppeteer/Playwright
+(heavy). Decide when picking this up.
 
-**Why originally deferred (T1/T3 still applies):** S5/S6 JW redesign was
-schema-breaking and time-critical while the wipe-and-rebuild migration window
-was open. PDF rendering was independent — the T2 slice landed post-S8 on
-2026-08-21; T1/T3 remain unscheduled.
-
-**Test coverage (shipped T2/dispatch scope):** the JW-Challan-Out "Print PDF"
-button is live-verified by e2e (`e2e/tests/flows/challan-pdf.spec.ts` —
-real click, real `blob:` PDF, print-time field hydration). The
-weaving-dispatch "Print Beam Issue" / "Print Weft Delivery" buttons are
-**not** independently live-e2e-verified — they're covered by FE integration
-tests (button presence/role-gating, `usePrintChallan`/`pdf-entry` mocked at
-the boundary) plus unit tests on the shared `challan-print` renderer/mappers/
-pagination that both document types route through.
+**Why deferred:** S5/S6 JW redesign is schema-breaking and time-critical
+while the wipe-and-rebuild migration window is open. PDF rendering is
+independent — can land in S6.5 (between S6 and S7) or fold into S7 itself.
 
 ---
 
@@ -1065,3 +1032,47 @@ Screenshots: `e2e/e2e-artifacts/conservation-1-over-balance.png`, `conservation-
 **Severity:** Low — cosmetic, but it is on-screen on every new JW-Out challan.
 
 The JW-Out form's totals row shows `Totals NaN` for Bags and `NaN kg` for Gross Wt whenever those optional inputs are left blank, because the reducer sums `undefined`/`NaN` from `valueAsNumber` registrations instead of coalescing to 0. Visible in both screenshots above. Fix: coalesce non-finite values to 0 in the totals reducer.
+
+## B-035 — Out-item consumption counted by five readers, each with a partial view (P0)
+
+**Status:** In progress 2026-08-26 on `fix/out-item-conservation-{be,fe,e2e}` (branched from `main`/`master`).
+**Severity:** P0 — silent data corruption, present on `main`, deployed to prod since 2026-08-21.
+
+`JWO-2026-27-024` produced **22 KG of beam from a 10 KG dispatch** across three beam receipts.
+`jw_challan_out_items` is drawn down by four terms — JW-In sources, sizing beam receipts,
+weaving-in weft, and write-offs — but `getCumulativeConsumedByOutItems`
+(`prisma-jw-challan-in.repository.ts:491`) counts only JW-In sources. Each beam receipt therefore
+saw `prior = 0` and validated only its own batch: 4 ≤ 10 ✓, 9 ≤ 10 ✓, 9 ≤ 10 ✓.
+
+Five readers hand-roll their own partial total: the beam-receipt guard, the JW-In guard, the
+eligible-out-items picker, which also double-subtracts wastage and so is wrong in both directions at
+once. (`deriveStatusFromReceipts` counts wrong too but is dead code — deleted as cleanup, not a fix.) **`getOutItemRollup` already computes the union correctly** — the fix is
+to extract that computation and repoint the others at it, not to build a second union.
+
+Full analysis, the validated cancellation-aware audit query, and the recurrence guard (a
+schema-driven test that fails when a new FK to `JwChallanOutItem` is neither registered nor
+allow-listed) are in `docs/brainstorms/2026-08-26-out-item-conservation.md`.
+
+Dev has exactly one corrupted row. **Prod count is unknown** — RDS is EC2-only reachable, so the
+audit is a read-only pre-deploy step over SSH. Repair ships as a separate reviewed, idempotent,
+dry-run-by-default migration that runs *after* the guard deploys.
+
+## B-036 — Cancelled JW-In receipts still consume their out-item
+
+**Status:** In progress 2026-08-26, fixed alongside B-035.
+**Severity:** Medium, currently **latent** — dev has 16 JW-In receipts, all `active`, zero cancelled.
+Fires the first time anyone cancels a receipt. No data repair needed; needs a regression test.
+
+`cancel()` (`jw-challan-in.service.ts:458-531`) reverses the ledger and flips `status` to
+`cancelled` — it does not delete the `JwChallanInYarnItemSource` rows. But `findOutWithReceipts`
+(`prisma-jw-challan-in.repository.ts:310-350`) selects `receipts` with **no `where` filter and
+without selecting `status`**, so the JW-In conservation guard and `deriveStatusFromReceipts` cannot
+exclude cancelled receipts and keep counting their `consumedQty` forever.
+
+Effect is the opposite of B-035 — too strict rather than too loose: cancelling a receipt never
+releases the yarn, so legitimate re-receipt is blocked and status derivation stays wrong.
+
+Fix is *not* to add a status filter to that select — repoint both readers off
+`parentMap.receipts` entirely and onto the shared consumption function, since preserving the
+hand-rolled walk preserves the defect. The team already solved this once in `getOutItemRollup`
+(see the comment at `jw-challan-in.service.ts:502-506`); it was never propagated.
