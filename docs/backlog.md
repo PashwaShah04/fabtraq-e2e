@@ -1135,8 +1135,10 @@ exists only for `sizing_jw` beams. `in_house` renders the literal "In-house". **
 nothing to resolve**: `BeamReceipt` carries only `transporterId`, `vehicleNo` and `notes` — there
 is no supplier FK anywhere on the purchase path (`schema.prisma:603-618`).
 
-Measured in `fabtraq_dev` 2026-08-26: purchase is **10 of 20** beams, so half the register renders
-"—" until this lands.
+Measured 2026-08-26 in **`fabtraq_test`** (the DB this worktree's `.env` targets — NOT `fabtraq_dev`,
+which was never sampled): purchase was **10 of 20** beams, so roughly half the register renders "—"
+until this lands. Re-measure against production/dev before sizing the work; the test DB is reset by
+every integration run and its origin mix is an artifact of whichever specs ran last.
 
 Fix adds a nullable `vendorId` to `BeamReceipt` (FK to the existing Vendor master), surfaces it on
 the purchase branch of the beam-receipt form, and extends both `sourcedFrom` derivations
