@@ -187,6 +187,37 @@ arrive on a vehicle too. Left as-is — raise separately if you want it on all o
 | migration | drops two unique constraints — run integration against `fabtraq_test`, then `db:reset` |
 | prod | no data repair needed; the constraint drop is forward-only and safe on existing rows |
 
+## Landmine found while doing this: duplicate B-035
+
+`main`'s backlog and the `fix/out-item-conservation-*` backlog **both define a
+B-035, and they are different tickets**:
+
+| Branch | B-035 |
+| --- | --- |
+| `main` | Auth token rotation (session JWT is never refreshed) |
+| `fix/out-item-conservation-*` | Out-item consumption counted by five readers |
+
+Nothing here depends on the resolution, and neither ticket is ours to renumber —
+but a merge will silently produce a backlog with two `## B-035` sections, and
+every cross-reference to "B-035" becomes ambiguous. Whoever merges the
+conservation line should renumber one of them first. Our own B-037/B-038/B-039
+were allocated against the conservation backlog and are unaffected.
+
+## Prod pre-deploy gate (B1b) — not yet run
+
+The orphan audit below has **not** been run against prod: SSH from this
+environment is blocked. `scripts/audit-orphan-beam-items.sh` in `fabtraq-deploy`
+runs it in one command. Dev returned 3 before the seed fix and 0 after.
+
+```sql
+SELECT count(*) FROM beam_receipt_items i
+LEFT JOIN beams b ON b.beam_receipt_item_id = i.id
+WHERE b.id IS NULL;
+```
+
+Non-zero means those receipts cannot be marked cancelled (`isBeamReceiptCancelled`
+requires a Beam row per item) and need a backfill before this ships.
+
 ## Out of scope
 
 - Beam-number reuse across *non-cancelled* history (still hard-blocked — correct).
