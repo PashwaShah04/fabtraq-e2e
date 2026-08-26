@@ -1076,3 +1076,50 @@ Fix is *not* to add a status filter to that select — repoint both readers off
 `parentMap.receipts` entirely and onto the shared consumption function, since preserving the
 hand-rolled walk preserves the defect. The team already solved this once in `getOutItemRollup`
 (see the comment at `jw-challan-in.service.ts:502-506`); it was never propagated.
+
+## B-037 — A cancelled beam holds its beam number forever
+
+**Status:** In progress 2026-08-26. **Severity:** High — blocks routine re-entry, no corruption.
+**Spec:** `docs/brainstorms/2026-08-26-beam-cancel-gaps.md`
+
+`beam_number` carries a hard `@unique` on both `beams` and `beam_receipt_items`. Cancelling a
+receipt sets `Beam.status='cancelled'` but deletes nothing, so the number is never released and
+re-entry fails with `A beam with this beam number already exists.` Live case in dev:
+`BRC-2026-27-008` — 4 cancelled beams holding numbers `17`–`20`.
+
+Fix drops both constraints (a partial unique index is not Prisma-expressible and would fight the
+B-004 drift gate every migration) and moves enforcement into `BeamReceiptService`, which already
+runs every create path under `runSerializable`. The constraint was doing three jobs —
+cross-receipt uniqueness, intra-payload distinctness, and one `findUnique({ where: { beamNumber } })`
+in `prisma-lineage.repository.ts` — all three need replacing, not just the first.
+
+## B-038 — Beam-receipt cancellation is invisible, and its guard is dead for purchase receipts
+
+**Status:** In progress 2026-08-26. **Severity:** High.
+**Spec:** `docs/brainstorms/2026-08-26-beam-cancel-gaps.md`
+
+Two defects, one fix. (a) `beamReceiptResponseSchema` has no cancellation field, so neither the
+detail page nor the register can show a status and the "Cancel receipt" button has nothing to
+hide behind. Query invalidation was checked and is not the problem.
+
+(b) `cancel()` guards on `hasReversalRows` — a `stock_ledger` cancellation row. But
+purchase-origin receipts write **no ledger rows at all** (only `in_house` and `sizing_jw` call
+`this.inventory.*`), so that guard is structurally false for them forever and they can be
+cancelled repeatedly.
+
+Fix derives one predicate from the beam register — every item gets a `Beam` row in all three
+create paths, and `status='cancelled'` is written in exactly one place — and uses it for **both**
+the DTO's new `cancelled` field and the guard, so display and guard cannot disagree.
+`hasReversalRows` on the beam-receipt repo is then dead and deleted.
+
+## B-039 — Transporter is a free-text UUID box on the beam-receipt form
+
+**Status:** In progress 2026-08-26. **Severity:** Low.
+**Spec:** `docs/brainstorms/2026-08-26-beam-cancel-gaps.md`
+
+`beam-receipt-form.page.tsx` renders `transporterId` as a plain `<Input>` labelled
+"Transporter ID"; typing a name returns `valid uuid is required`. Every other form uses the
+shared `TransporterSelect` combobox. Swap it, relabel, widen the wrapper.
+
+Flagged, out of scope: the field is gated to `beamOrigin === 'sizing_jw'` although
+`beam_receipts.transporter_id` is not origin-specific.
