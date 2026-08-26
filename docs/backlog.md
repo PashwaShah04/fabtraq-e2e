@@ -1170,3 +1170,27 @@ Deliberately NOT fixed inside the `sourcedFrom` workstream: changing seed data t
 specs assert against, mid-flight across four repos, risks a regression for a cosmetic consistency
 win. Fix links `BEAM-C-002` to a warping out-item like Scenario 4 does, then re-runs the full e2e
 suite to catch specs that depended on the old shape.
+
+## B-042 — FE coverage runs flake at the default 5s test timeout
+
+**Status:** Open 2026-08-26. **Severity:** Low (CI risk, not a product defect).
+
+`npm run test` is green (163 files / 1427 tests). `npm run test:coverage` is not reliably green:
+three consecutive runs each failed 3-4 tests, **a different subset every time**, always heavy
+async/network-mocked integration suites hitting the 5000ms default `testTimeout` under v8
+coverage instrumentation:
+
+- `tests/integration/features/jw-challans-in/form.page.test.tsx`
+- `tests/integration/features/jw-challans-out/lot-balance-cap.test.tsx`
+- `tests/integration/features/weaving-dispatches/weft-lot-balance-cap.test.tsx`
+- `tests/integration/features/beam-receipts/form.page.test.tsx` (once)
+
+Proven to be an instrumentation artifact, not a real failure: those files pass 100% (59/59) when
+run standalone via `npx vitest run <files>` without `--coverage`. A one-off
+`--testTimeout=20000` produces a clean run and a full table (93.49 / 88.31 / 85.51 / 93.49 —
+well clear of the 80/75/80/80 gate).
+
+CI runs `npm run test:coverage`, so this is a latent flaky-red. Fix is to raise `testTimeout` in
+`vitest.config.ts` (or per-suite) so the instrumented runs have headroom — **not** to lower a
+coverage threshold. Deliberately NOT changed inside the `sourcedFrom` workstream: touching the
+vitest config to get a green gate on someone else's flake is exactly the shortcut that hides it.
