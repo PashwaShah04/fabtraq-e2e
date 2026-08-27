@@ -6,6 +6,14 @@ import { gotoAndExpect } from '../../support/nav';
 // cancelled excluded, plus the "No design" bucket for purchase-origin beams
 // (legitimate roots, R9 — never a blank label).
 //
+// THE BARS MEASURE BEAM COUNT, NOT KG. `StackedBar` is given
+// `unitLabel="beams"` and each segment's `value` is `colourway.count`; the D7
+// kg subtotal rides ALONGSIDE on `totalLabel`, which is why the bar's
+// accessible name reads in kg while its width reads in beams. Both axes are
+// asserted here — the kg subtotal through the bar's aria-label, the count
+// through each segment's `title` (StackedBar.tsx:88, set on the <button> and
+// the <span> branch alike).
+//
 // SEED REALITY, stated up front because it bounds what these tests prove: a
 // freshly seeded fabtraq_dev holds 4 beams, ALL with `design_id IS NULL` and
 // `colourway_id IS NULL`, all `received`, none cancelled. So:
@@ -19,53 +27,133 @@ import { gotoAndExpect } from '../../support/nav';
 //   - the cancelled-exclusion filter is UNFALSIFIABLE on this seed: with zero
 //     cancelled rows the `status <> 'cancelled'` clause is a no-op on both
 //     sides of the assertion. Annotated per run rather than passing silently.
+//   - with ONE design group holding ONE colour-way, the two bar-COUNT
+//     assertions are 1-versus-1: a view rendering only the first design and
+//     only the first colour-way would pass them. Annotated per run; closing it
+//     needs a design-linked seed row, not a spec change.
 //
 // Not touched, deliberately: `mockBeamsGrouped`'s empty `colourway.beams[]`
 // arrays diverge from the live endpoint's populated ones (Task 13). Nothing
 // here — and nothing in the drill, whose deepest level reads `statusCounts` —
 // consumes that array, so the mock stays as it is.
 
-interface DesignRollup {
+/**
+ * One row per (design, colour-way) bucket — the finest grain the chart draws.
+ * The design level is rolled up from these in the spec rather than by a second
+ * query, so the two levels cannot disagree about what a group holds.
+ */
+interface GroupRow {
+  design_key: string;
   design_name: string | null;
+  colourway_key: string;
+  colourway_name: string | null;
   beam_count: string;
   net_weight_kg: string;
-  colourways: string;
+  received: string;
+  issued_to_weaver: string;
+  fabric_received: string;
+}
+
+interface DesignRollup {
+  key: string;
+  label: string;
+  netWeightKg: number;
+  colourways: GroupRow[];
 }
 
 /** Mirrors `beam-drill.ts`'s `kgLabel`. */
 const kgLabel = (kg: number): string =>
   `${kg.toLocaleString('en-US', { maximumFractionDigits: 3 })} KG`;
 
+/** Mirrors StackedBar's segment value formatting. */
+const num = (n: number): string => n.toLocaleString('en-US');
+
+// `beam-drill.ts` reuses ONE sentinel for a null design AND a null colour-way
+// (`colourway.colourwayId ?? NO_DESIGN`), so the oracle does too — a distinct
+// NO_COLOURWAY token here would key differently from the code under test.
 const NO_DESIGN = 'no-design';
 
-const DESIGN_ROLLUPS = `
-  SELECT d.name AS design_name,
+const GROUP_ROLLUPS = `
+  SELECT COALESCE(bri.design_id::text, '${NO_DESIGN}') AS design_key,
+         d.name AS design_name,
+         COALESCE(bri.colourway_id::text, '${NO_DESIGN}') AS colourway_key,
+         dc.name AS colourway_name,
          COUNT(*)::text AS beam_count,
          SUM(b.net_weight)::text AS net_weight_kg,
-         COUNT(DISTINCT COALESCE(bri.colourway_id::text, '${NO_DESIGN}'))::text AS colourways
+         COUNT(*) FILTER (WHERE b.status = 'received')::text AS received,
+         COUNT(*) FILTER (WHERE b.status = 'issued_to_weaver')::text AS issued_to_weaver,
+         COUNT(*) FILTER (WHERE b.status = 'fabric_received')::text AS fabric_received
     FROM beams b
     JOIN beam_receipt_items bri ON bri.id = b.beam_receipt_item_id
     LEFT JOIN designs d ON d.id = bri.design_id
+    LEFT JOIN design_colourways dc ON dc.id = bri.colourway_id
    WHERE b.status <> 'cancelled'
-   GROUP BY bri.design_id, d.name
-   ORDER BY d.name NULLS LAST`;
+   GROUP BY bri.design_id, d.name, bri.colourway_id, dc.name
+   ORDER BY d.name NULLS LAST, dc.name NULLS LAST`;
+
+/** Rolls the buckets up by design, preserving the SQL's name-NULLS-LAST order. */
+function byDesign(rows: readonly GroupRow[]): DesignRollup[] {
+  const designs = new Map<string, DesignRollup>();
+  for (const row of rows) {
+    const design = designs.get(row.design_key) ?? {
+      key: row.design_key,
+      label: row.design_name ?? 'No design',
+      netWeightKg: 0,
+      colourways: [],
+    };
+    design.netWeightKg += Number(row.net_weight_kg);
+    design.colourways.push(row);
+    designs.set(row.design_key, design);
+  }
+  return [...designs.values()];
+}
+
+const colourwayLabel = (row: GroupRow): string => row.colourway_name ?? 'No colour-way';
+
+function maxBy<T>(values: readonly T[], score: (value: T) => number): T | undefined {
+  return values.length === 0 ? undefined : values.reduce((a, b) => (score(b) > score(a) ? b : a));
+}
+
+/**
+ * The status bucket holding the most beams. Click targets are derived, never
+ * `.first()` (D4): `pushDrill` passes the ROW key so the choice cannot change
+ * the outcome, but a 1-of-N bucket can be a few pixels wide at a position this
+ * spec does not control.
+ */
+function widestStatus(row: GroupRow): string {
+  const buckets = [
+    ['received', Number(row.received)],
+    ['issued_to_weaver', Number(row.issued_to_weaver)],
+    ['fabric_received', Number(row.fabric_received)],
+  ] as const;
+  return (maxBy(buckets, ([, n]) => n) ?? buckets[0])[0];
+}
 
 test('the beams tab rolls beams up by design with a kg subtotal, excluding cancelled', async ({
   page,
   db,
 }) => {
-  const rollups = await db.queryMany<DesignRollup>(DESIGN_ROLLUPS);
-  expect(rollups.length, 'seed must provide non-cancelled beams').toBeGreaterThan(0);
+  const designs = byDesign(await db.queryMany<GroupRow>(GROUP_ROLLUPS));
+  expect(designs.length, 'seed must provide non-cancelled beams').toBeGreaterThan(0);
 
   const cancelled = await db.queryOne<{ n: string }>(
     `SELECT COUNT(*)::text AS n FROM beams WHERE status = 'cancelled'`,
   );
   if (Number(cancelled?.n ?? '0') === 0) {
     test.info().annotations.push({
-      type: 'skip',
+      type: 'unfalsifiable',
       description:
         'no cancelled beams in the seed: the cancelled-exclusion filter is a no-op on both ' +
         'sides of this assertion and is therefore not exercised.',
+    });
+  }
+  if (designs.length === 1) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'one design group on this seed, so the bar COUNT below is 1-versus-1: a view rendering ' +
+        'only the first design would pass it. The per-colour-way counts and the kg subtotal are ' +
+        'still asserted by value.',
     });
   }
 
@@ -74,16 +162,29 @@ test('the beams tab rolls beams up by design with a kg subtotal, excluding cance
   const panel = page.getByRole('tabpanel');
   // One bar per rollup — asserted as a COUNT so an extra or missing group reds,
   // which a per-rollup visibility loop alone would not catch.
-  await expect(panel.getByRole('img')).toHaveCount(rollups.length);
+  await expect(panel.getByRole('img')).toHaveCount(designs.length);
 
-  for (const rollup of rollups) {
-    const label = rollup.design_name ?? 'No design';
+  for (const design of designs) {
     // The bar's accessible name is `${label}: ${kgLabel}` — the D7 kg subtotal
     // rendered verbatim in place of the summed count. Asserted against the
     // ledger's own SUM(net_weight), not a literal.
     await expect(
-      panel.getByLabel(`${label}: ${kgLabel(Number(rollup.net_weight_kg))}`, { exact: true }),
+      panel.getByLabel(`${design.label}: ${kgLabel(design.netWeightKg)}`, { exact: true }),
     ).toBeVisible();
+
+    // The axis the bar actually DRAWS, which the kg accessible name says
+    // nothing about: each segment is one colour-way and its value is that
+    // colour-way's beam COUNT. The segment `title` is the only place that
+    // number is rendered.
+    for (const colourway of design.colourways) {
+      await expect(
+        panel.locator(`[data-chart-segment="${design.key}:${colourway.colourway_key}"]`),
+        `beam count for ${design.label} / ${colourwayLabel(colourway)}`,
+      ).toHaveAttribute(
+        'title',
+        `${colourwayLabel(colourway)}: ${num(Number(colourway.beam_count))} beams`,
+      );
+    }
   }
 });
 
@@ -91,77 +192,119 @@ test('drilling a design opens its colour-ways, and the status level is terminal'
   page,
   db,
 }) => {
-  const rollups = await db.queryMany<DesignRollup>(DESIGN_ROLLUPS);
-  const target = rollups[0];
+  const designs = byDesign(await db.queryMany<GroupRow>(GROUP_ROLLUPS));
+  const target = designs[0];
   expect(target, 'seed must provide at least one beam group').toBeDefined();
   if (target === undefined) return;
+  const colourway = maxBy(target.colourways, (c) => Number(c.beam_count));
+  expect(colourway, 'a design group must hold at least one colour-way').toBeDefined();
+  if (colourway === undefined) return;
 
   // `beamDrillView` keys a null design as the literal `no-design`; a design
   // group keys on its own id.
-  const designKey = await db.queryOne<{ key: string }>(
-    `SELECT COALESCE(bri.design_id::text, '${NO_DESIGN}') AS key
-       FROM beams b
-       JOIN beam_receipt_items bri ON bri.id = b.beam_receipt_item_id
-       LEFT JOIN designs d ON d.id = bri.design_id
-      WHERE b.status <> 'cancelled'
-      GROUP BY bri.design_id, d.name
-      ORDER BY d.name NULLS LAST
-      LIMIT 1`,
-  );
-  expect(designKey).not.toBeNull();
-  if (designKey === null) return;
-
-  if (designKey.key === NO_DESIGN) {
+  if (target.key === NO_DESIGN) {
     test.info().annotations.push({
-      type: 'skip',
+      type: 'unfalsifiable',
       description:
         'the seed has no design-linked beams, so this drill runs through the No-design bucket. ' +
         'The design-NAME crumb and a design-id drill value are not exercised live.',
+    });
+  }
+  if (target.colourways.length === 1) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'this design holds one colour-way, so the colour-way bar COUNT is 1-versus-1: a view ' +
+        'rendering only the first colour-way would pass it.',
     });
   }
 
   await gotoAndExpect(page, '/inventory?tab=beams');
   const panel = page.getByRole('tabpanel');
   const crumb = panel.locator('[data-drill-crumb]');
-  const designLabel = target.design_name ?? 'No design';
 
   // ---- Level 0 → 1: design → colour-ways --------------------------------
-  await panel.locator(`[data-chart-segment^="${designKey.key}:"]`).first().click();
-  await expect(page).toHaveURL(new RegExp(`drill=design%3A${designKey.key}`));
-  await expect(crumb.last()).toContainText(designLabel);
+  await panel.locator(`[data-chart-segment="${target.key}:${colourway.colourway_key}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`drill=design%3A${target.key}`));
+  await expect(crumb.last()).toContainText(target.label);
   // Colour-way bars: one per distinct colourway in this design group.
-  await expect(panel.getByRole('img')).toHaveCount(Number(target.colourways));
+  await expect(panel.getByRole('img')).toHaveCount(target.colourways.length);
 
   // ---- Level 1 → 2: colour-way → status ---------------------------------
-  const colourwayKey = await db.queryOne<{ key: string; name: string | null }>(
-    `SELECT COALESCE(bri.colourway_id::text, '${NO_DESIGN}') AS key, dc.name
-       FROM beams b
-       JOIN beam_receipt_items bri ON bri.id = b.beam_receipt_item_id
-       LEFT JOIN design_colourways dc ON dc.id = bri.colourway_id
-      WHERE b.status <> 'cancelled'
-        AND COALESCE(bri.design_id::text, '${NO_DESIGN}') = $1
-      GROUP BY bri.colourway_id, dc.name
-      ORDER BY dc.name NULLS LAST
-      LIMIT 1`,
-    [designKey.key],
-  );
-  expect(colourwayKey).not.toBeNull();
-  if (colourwayKey === null) return;
-
-  await panel.locator(`[data-chart-segment^="${colourwayKey.key}:"]`).first().click();
-  await expect(page).toHaveURL(new RegExp(`%2Fcolourway%3A${colourwayKey.key}`));
-  await expect(crumb.last()).toContainText(colourwayKey.name ?? 'No colour-way');
+  await panel
+    .locator(`[data-chart-segment="${colourway.colourway_key}:${widestStatus(colourway)}"]`)
+    .click();
+  await expect(page).toHaveURL(new RegExp(`%2Fcolourway%3A${colourway.colourway_key}`));
+  await expect(crumb.last()).toContainText(colourwayLabel(colourway));
 
   // Status is the LEAF: segments render as <span>, not <button>, so there is
   // nothing further to click. All three are asserted by count, never by
   // visibility — an all-`received` seed leaves two of them at width 0%, and a
   // zero-width flex child has no bounding box for Playwright to see.
+  //
+  // Their VALUES belong to the next test, which reaches this level by URL: the
+  // colour-way bar above filters its segments to `value > 0`
+  // (beam-drill.ts:106), so a wrong `statusCounts` pick empties that bar and
+  // severs the click here — the failure would read as a missing locator, and
+  // no value assertion would ever fire.
   await expect(panel.locator('button[data-chart-segment]')).toHaveCount(0);
   await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3);
 
   // Back to the top clears the whole drill.
   await panel.locator('[data-drill-crumb="0"]').click();
   await expect(page).not.toHaveURL(/drill=/);
+});
+
+test('the terminal status level splits the colour-way by beam status', async ({ page, db }) => {
+  const designs = byDesign(await db.queryMany<GroupRow>(GROUP_ROLLUPS));
+  const target = designs[0];
+  expect(target, 'seed must provide at least one beam group').toBeDefined();
+  if (target === undefined) return;
+  const colourway = maxBy(target.colourways, (c) => Number(c.beam_count));
+  expect(colourway, 'a design group must hold at least one colour-way').toBeDefined();
+  if (colourway === undefined) return;
+
+  const statuses = [
+    ['received', 'Received', Number(colourway.received)],
+    ['issued_to_weaver', 'Issued to weaver', Number(colourway.issued_to_weaver)],
+    ['fabric_received', 'Fabric received', Number(colourway.fabric_received)],
+  ] as const;
+
+  const zeroed = statuses.filter(([, , n]) => n === 0).map(([, label]) => label);
+  if (zeroed.length > 0) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        `empty on this seed and therefore asserted at zero: ${zeroed.join(', ')}. A swap ` +
+        'BETWEEN any two zero buckets would not be caught; only the non-zero ones falsify the ' +
+        'statusCounts pick.',
+    });
+  }
+  if (designs.length === 1 && target.colourways.length === 1) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'one design holding one colour-way, so the colour-way-scoped statusCounts and the ' +
+        'design-scoped ones are the same numbers: a level reading the wrong group would pass.',
+    });
+  }
+
+  // Reached by URL rather than by clicking down, deliberately — see the note in
+  // the drill test above. This is what makes a wrong statusCounts pick die on a
+  // TITLE MISMATCH instead of on a vanished click target.
+  const drill = `design:${target.key}/colourway:${colourway.colourway_key}`;
+  await gotoAndExpect(page, `/inventory?tab=beams&drill=${encodeURIComponent(drill)}`);
+
+  const panel = page.getByRole('tabpanel');
+  await expect(panel.locator('button[data-chart-segment]')).toHaveCount(0);
+  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3);
+
+  for (const [key, label, count] of statuses) {
+    await expect(
+      panel.locator(`span[data-chart-segment="${colourway.colourway_key}:${key}"]`),
+      `${label} count`,
+    ).toHaveAttribute('title', `${label}: ${num(count)} beams`);
+  }
 });
 
 test('purchase-origin beams land in the No-design bucket, not a blank label', async ({

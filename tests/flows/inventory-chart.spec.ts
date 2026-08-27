@@ -144,7 +144,7 @@ test('drills quality → SKU → processed type → custody, keeping the table i
 
   if (qualityItems.length === items.length) {
     test.info().annotations.push({
-      type: 'skip',
+      type: 'unfalsifiable',
       description:
         'quality level: every row on this page belongs to ONE quality, so the level-0 drill ' +
         'narrows nothing — the row count is asserted but the narrowing property is not ' +
@@ -159,7 +159,7 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   await expect(rows).toHaveCount(skuItems.length);
   if (skuItems.length === qualityItems.length) {
     test.info().annotations.push({
-      type: 'skip',
+      type: 'unfalsifiable',
       description:
         'SKU level: this quality holds exactly one SKU on this page, so the level-1 drill ' +
         'narrows nothing — the row count is asserted but the narrowing property is not exercised.',
@@ -178,7 +178,7 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   await expect(rows).toHaveCount(leafRows.length);
   if (leafRows.length === skuItems.length) {
     test.info().annotations.push({
-      type: 'skip',
+      type: 'unfalsifiable',
       description:
         'processedType level: this SKU holds one processedType group on this page, so the ' +
         'level-2 drill narrows nothing — the narrowing property is not exercised.',
@@ -208,10 +208,14 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   }
   if (custody[1][2] === 0 && custody[2][2] === 0) {
     test.info().annotations.push({
-      type: 'skip',
+      type: 'unfalsifiable',
       description:
         'custody level: the drilled position is fully in-house, so the At-JW and Unplaced ' +
-        'segments are asserted at zero — a swap between those two buckets would not be caught.',
+        'segments are asserted at zero — a swap between those two buckets would not be caught. ' +
+        'The In-house segment is equally undecided: with nothing at a job worker and nothing ' +
+        'awaiting placement, inHouseBalance and totalBalance coincide, so a bar reading ' +
+        'totalBalance instead of inHouseBalance passes this assertion too. All three need a ' +
+        'seed row, not a spec change.',
     });
   }
 
@@ -224,6 +228,108 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   await panel.locator('[data-drill-crumb="0"]').click();
   await expect(page).not.toHaveURL(/drill=/);
   await expect(rows).toHaveCount(items.length);
+});
+
+/**
+ * The bar total the way `StackedBar` computes it: per-SKU segment sums, then a
+ * sum of those. Mirroring the association rather than summing the rows flat
+ * keeps float addition byte-identical to the rendered string.
+ */
+function barTotal(rows: readonly SummaryRow[], pick: (row: SummaryRow) => number): number {
+  const bySku = new Map<string, number>();
+  for (const row of rows) {
+    const key = row.skuId ?? 'no-shade';
+    bySku.set(key, (bySku.get(key) ?? 0) + pick(row));
+  }
+  return [...bySku.values()].reduce((sum, value) => sum + value, 0);
+}
+
+test('custody chips re-slice the level-0 bars and vanish once drilled', async ({ page }) => {
+  // Task 17's R3 chips (spec §5.4): a level-0 FILTER held in local component
+  // state — never a drill step, never a crumb, never the table. Both halves of
+  // that ruling are asserted here: the bars re-slice by custody bucket, and the
+  // chips are UNMOUNTED (not merely disabled) the moment a drill step exists.
+  await gotoAndExpect(page, '/inventory');
+  const items = await summaryRows(page.request);
+
+  const byQuality = new Map<string, SummaryRow[]>();
+  for (const row of items) {
+    byQuality.set(row.qualityId, [...(byQuality.get(row.qualityId) ?? []), row]);
+  }
+
+  const panel = page.getByRole('tabpanel');
+  // The chips are the only `aria-pressed` buttons inside a tabpanel: the other
+  // user of that attribute on this page is PipelineBand, whose stage cards sit
+  // above <Tabs> and so outside every panel. Counting them is what
+  // distinguishes "unmounted" from "rendered but disabled".
+  const chips = panel.locator('button[aria-pressed]');
+  const chip = (name: string) => panel.getByRole('button', { name, exact: true });
+
+  async function expectBars(pick: (row: SummaryRow) => number): Promise<void> {
+    for (const rows of byQuality.values()) {
+      const name = `${rows[0]?.qualityName ?? ''}: ${num(barTotal(rows, pick))} KG`;
+      await expect(panel.getByLabel(name, { exact: true })).toBeVisible();
+    }
+  }
+
+  await expect(chips).toHaveCount(3);
+  await expectBars((r) => r.totalBalance);
+
+  // At JW is the discriminating chip on this seed: nothing sits at a job
+  // worker, so every bar must collapse. In-house alone would be
+  // indistinguishable from no filter at all.
+  const atJwIsTotal = [...byQuality.values()].every(
+    (rows) => barTotal(rows, (r) => r.atJobWorkerBalance) === barTotal(rows, (r) => r.totalBalance),
+  );
+  if (atJwIsTotal) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'every quality holds the same balance at a job worker as in total, so the At-JW ' +
+        're-slice below cannot be told apart from no filter at all.',
+    });
+  }
+  test.info().annotations.push({
+    type: 'unfalsifiable',
+    description:
+      'on a fully-in-house seed the chips are only partly falsifiable: In-house reads the same ' +
+      'as totalBalance, and At JW reads the same as Unplaced (both zero), so a field swap ' +
+      'within either pair would pass. Same seed gap as the custody leaf above.',
+  });
+
+  await chip('At JW').click();
+  await expect(chip('At JW')).toHaveAttribute('aria-pressed', 'true');
+  await expectBars((r) => r.atJobWorkerBalance);
+
+  await chip('In-house').click();
+  await expect(chip('At JW')).toHaveAttribute('aria-pressed', 'false');
+  await expect(chip('In-house')).toHaveAttribute('aria-pressed', 'true');
+  await expectBars((r) => r.inHouseBalance);
+
+  // Drill with the chip still ACTIVE — that is the state the "chips vanish"
+  // rule exists for. The segment is chosen for width, since a re-sliced bar can
+  // leave most of its segments at 0%.
+  const bySku = new Map<string, SummaryRow[]>();
+  for (const row of items) {
+    if (row.skuId === null) continue;
+    const key = `${row.qualityId}\x00${row.skuId}`;
+    bySku.set(key, [...(bySku.get(key) ?? []), row]);
+  }
+  expect(bySku.size, 'seed must provide a SKU-bearing stock item').toBeGreaterThan(0);
+  const target = maxBy([...bySku.values()], (rows) => barTotal(rows, (r) => r.inHouseBalance))[0];
+  expect(target).toBeDefined();
+  if (target === undefined || target.skuId === null) return;
+
+  await panel.locator(`[data-chart-segment="${target.qualityId}:${target.skuId}"]`).click();
+  await expect(page).toHaveURL(new RegExp(`drill=quality%3A${target.qualityId}`));
+  await expect(chips, 'the chips are unmounted while drilled, not disabled').toHaveCount(0);
+
+  // Back at level 0 they return, UNSET: `pushDrill` clears the chip so a stale
+  // slice cannot silently re-apply to bars that now mean something else.
+  await panel.locator('[data-drill-crumb="0"]').click();
+  await expect(chips).toHaveCount(3);
+  await expect(chip('In-house')).toHaveAttribute('aria-pressed', 'false');
+  await expectBars((r) => r.totalBalance);
 });
 
 test('a drilled URL is restorable on reload', async ({ page }) => {
