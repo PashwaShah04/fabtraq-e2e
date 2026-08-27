@@ -301,6 +301,15 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   await expect(chip('At JW')).toHaveAttribute('aria-pressed', 'true');
   await expectBars((r) => r.atJobWorkerBalance);
 
+  // Clicking the ACTIVE chip clears it. Without this the chips are a one-way
+  // latch and the only route back to the unfiltered total is to drill and come
+  // back. Asserted on At JW rather than In-house because on a fully-in-house
+  // seed the In-house slice equals the total, so its bars could not tell a
+  // cleared chip from a stuck one.
+  await chip('At JW').click();
+  await expect(chip('At JW')).toHaveAttribute('aria-pressed', 'false');
+  await expectBars((r) => r.totalBalance);
+
   await chip('In-house').click();
   await expect(chip('At JW')).toHaveAttribute('aria-pressed', 'false');
   await expect(chip('In-house')).toHaveAttribute('aria-pressed', 'true');
