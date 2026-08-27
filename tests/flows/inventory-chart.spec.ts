@@ -25,6 +25,14 @@ import { gotoAndExpect } from '../../support/nav';
 // and failed at 11-vs-14 rows in the full run. The endpoint is queried with
 // the page's own query, so the two cannot drift.
 //
+// UNITS ARE SEPARATE CHARTS (I1, spec R1). The hub renders one StackedBar per
+// unit present at the current level — never one chart with a page-level unit
+// literal — so every oracle here groups by (unit, dim) and reads the unit off
+// the row. Bar keys are unchanged by that split (unit is an outer partition,
+// not a drill dimension), so `data-chart-segment` selectors still name the
+// drill value; they are scoped by `[data-chart-unit]` where a value could
+// legitimately appear in more than one chart.
+//
 // TARGETS ARE DERIVED, NEVER "the first". Every clicked bar is chosen by an
 // explicit key computed from the oracle:
 //
@@ -120,24 +128,30 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   if (target === undefined || target.skuId === null) return;
 
   const qualityItems = items.filter((i) => i.qualityId === target.qualityId);
-  const leafKey = ptKey(maxBy(skuItems, (i) => i.totalBalance));
+  const leafKey = ptKey(maxBy(skuItems.filter((i) => i.unit === target.unit), (i) => i.totalBalance));
   const leafRows = skuItems.filter((i) => ptKey(i) === leafKey);
 
   // Level 0's segments are SKUs; a null-SKU segment is skipped for the same
   // reason as above, and any segment of this bar drills to the same quality.
+  // Segment keys are picked from the target's OWN unit chart — a bar in the
+  // METER chart is not a click target inside the KG one.
   const topSkuKey = maxBy(
-    qualityItems.filter((i) => i.skuId !== null),
+    qualityItems.filter((i) => i.skuId !== null && i.unit === target.unit),
     (i) => i.totalBalance,
   ).skuId;
 
   const panel = page.getByRole('tabpanel');
   const rows = panel.locator('tbody tr');
   const crumb = panel.locator('[data-drill-crumb]');
+  // Every bar clicked below lives in the TARGET's unit chart. The synced-table
+  // counts stay unscoped on purpose: the table is not partitioned by unit, it
+  // renders every narrowed row.
+  const unitChart = panel.locator(`[data-chart-unit="${target.unit}"]`);
 
   await expect(rows).toHaveCount(items.length);
 
   // ---- Level 0 → 1: quality --------------------------------------------
-  await panel.locator(`[data-chart-segment="${target.qualityId}:${topSkuKey ?? ''}"]`).click();
+  await unitChart.locator(`[data-chart-segment="${target.qualityId}:${topSkuKey ?? ''}"]`).click();
   await expect(page).toHaveURL(new RegExp(`drill=quality%3A${target.qualityId}`));
   await expect(crumb.last()).toContainText(target.qualityName);
   await expect(rows).toHaveCount(qualityItems.length);
@@ -153,7 +167,7 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   }
 
   // ---- Level 1 → 2: SKU -------------------------------------------------
-  await panel.locator(`[data-chart-segment="${target.skuId}:${leafKey}"]`).click();
+  await unitChart.locator(`[data-chart-segment="${target.skuId}:${leafKey}"]`).click();
   await expect(page).toHaveURL(new RegExp(`drill=quality%3A[^&]*%2Fsku%3A${target.skuId}`));
   await expect(crumb.last()).toContainText(target.skuName ?? '');
   await expect(rows).toHaveCount(skuItems.length);
@@ -167,7 +181,7 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   }
 
   // ---- Level 2 → 3: processed type --------------------------------------
-  await panel.locator(`[data-chart-segment="${leafKey}:${leafKey}"]`).click();
+  await unitChart.locator(`[data-chart-segment="${leafKey}:${leafKey}"]`).click();
   // A multi-type key is comma-joined, and both URLSearchParams and
   // encodeURIComponent spell that `%2C` — the two agree for the [a-z,]
   // alphabet JobWorkType uses.
@@ -192,21 +206,42 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   // position leaves two of the three at width 0%, and a zero-width flex child
   // has no bounding box for Playwright to see.
   await expect(panel.locator('button[data-chart-segment]')).toHaveCount(0);
-  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3);
 
-  const unit = leafRows[0]?.unit ?? target.unit;
+  // ONE custody bar PER UNIT (I1): the custody split sums three balance fields,
+  // and summing them across units would add kilograms to metres. The unit set
+  // is READ from the leaf rather than assumed single — a KG-only leaf gives 3
+  // segments, a mixed one gives 3 per unit, and each is asserted inside its own
+  // `[data-chart-unit]` chart with the sum of THAT unit's rows only.
+  const leafUnits = [...new Set(leafRows.map((r) => r.unit))];
+  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3 * leafUnits.length);
+
   const custody = [
-    ['in_house', 'In-house', sumOf(leafRows, (r) => r.inHouseBalance)],
-    ['at_jw', 'At JW', sumOf(leafRows, (r) => r.atJobWorkerBalance)],
-    ['unplaced', 'Unplaced', sumOf(leafRows, (r) => r.awaitingPlacementBalance)],
+    ['in_house', 'In-house', (r: SummaryRow) => r.inHouseBalance],
+    ['at_jw', 'At JW', (r: SummaryRow) => r.atJobWorkerBalance],
+    ['unplaced', 'Unplaced', (r: SummaryRow) => r.awaitingPlacementBalance],
   ] as const;
-  for (const [key, label, value] of custody) {
-    await expect(panel.locator(`span[data-chart-segment="custody:${key}"]`)).toHaveAttribute(
-      'title',
-      `${label}: ${num(value)} ${unit}`,
-    );
+  for (const unit of leafUnits) {
+    const unitLeafRows = leafRows.filter((r) => r.unit === unit);
+    for (const [key, label, pick] of custody) {
+      await expect(
+        panel.locator(`[data-chart-unit="${unit}"] span[data-chart-segment="custody:${key}"]`),
+      ).toHaveAttribute('title', `${label}: ${num(sumOf(unitLeafRows, pick))} ${unit}`);
+    }
   }
-  if (custody[1][2] === 0 && custody[2][2] === 0) {
+  if (leafUnits.length === 1) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'the drilled leaf holds ONE unit, so the per-unit custody partition is 1-versus-1 here: ' +
+        'a custody bar summing across units would render identically. The FE unit test ' +
+        '"never sums the custody buckets across units" (yarn-drill.test.ts) pins that on a ' +
+        'mixed-unit quality; closing it live needs a seeded METER yarn quality.',
+    });
+  }
+  if (
+    sumOf(leafRows, (r) => r.atJobWorkerBalance) === 0 &&
+    sumOf(leafRows, (r) => r.awaitingPlacementBalance) === 0
+  ) {
     test.info().annotations.push({
       type: 'unfalsifiable',
       description:
@@ -252,10 +287,19 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   await gotoAndExpect(page, '/inventory');
   const items = await summaryRows(page.request);
 
-  const byQuality = new Map<string, SummaryRow[]>();
+  // One bar group per (unit, quality) — the chart's own grain since I1. Built
+  // in a SINGLE pass so the order mirrors `yarnDrillView`: charts appear in
+  // the order each unit first appears in the summary page, and bars within a
+  // chart in the order each quality first appears within that unit.
+  const byUnit = new Map<string, Map<string, SummaryRow[]>>();
   for (const row of items) {
-    byQuality.set(row.qualityId, [...(byQuality.get(row.qualityId) ?? []), row]);
+    const byQualityInUnit = byUnit.get(row.unit) ?? new Map<string, SummaryRow[]>();
+    byUnit.set(row.unit, byQualityInUnit);
+    byQualityInUnit.set(row.qualityId, [...(byQualityInUnit.get(row.qualityId) ?? []), row]);
   }
+  const barGroups = [...byUnit.entries()].flatMap(([unit, byQualityInUnit]) =>
+    [...byQualityInUnit.values()].map((rows) => ({ unit, rows })),
+  );
 
   const panel = page.getByRole('tabpanel');
   // The chips are the only `aria-pressed` buttons inside a tabpanel: the other
@@ -268,17 +312,22 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   // Bars are located by INDEX and asserted with toHaveAccessibleName rather
   // than looked up by name: a chip reading the wrong custody field must red on
   // an Expected/Received value, not on a locator that stops resolving. The
-  // order is safe — `yarnDrillView` groups level-0 rows by quality in the order
-  // the summary page returns them, which is the order `byQuality` is built in.
-  // The count assertion is the yarn half of review Minor 5: nothing else here
-  // pins how MANY bars the chart draws.
+  // order is safe — `yarnDrillView` partitions by unit and then groups by
+  // quality, both in the order the summary page returns rows, which is the
+  // order `barGroups` is built in. The count assertion is the yarn half of
+  // review Minor 5: nothing else here pins how MANY bars the chart draws.
+  //
+  // THE UNIT COMES OFF THE ROW (I1). It used to be the literal `KG`, which
+  // agreed with the page only because the page hardcoded `KG` too and the seed
+  // holds no metered yarn — the ledger filed that agreement as a landmine at
+  // Task 18 (Minor 3) and predicted this exact edit.
   async function expectBars(pick: (row: SummaryRow) => number): Promise<void> {
     const bars = panel.getByRole('img');
-    await expect(bars).toHaveCount(byQuality.size);
+    await expect(bars).toHaveCount(barGroups.length);
     let index = 0;
-    for (const rows of byQuality.values()) {
+    for (const { unit, rows } of barGroups) {
       await expect(bars.nth(index)).toHaveAccessibleName(
-        `${rows[0]?.qualityName ?? ''}: ${num(barTotal(rows, pick))} KG`,
+        `${rows[0]?.qualityName ?? ''}: ${num(barTotal(rows, pick))} ${unit}`,
       );
       index += 1;
     }
@@ -293,19 +342,20 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   // the beams I1 gap the seed rows were dispatched to close, reintroduced by
   // the fix for it. Closing it needs a SECOND QUALITY in the seed, not a spec
   // change. The per-bar VALUE assertions below have teeth either way.
-  if (byQuality.size === 1) {
+  if (barGroups.length === 1) {
     test.info().annotations.push({
       type: 'unfalsifiable',
       description:
-        'one quality on this page, so expectBars\' bar COUNT is 1-versus-1: a chart rendering ' +
-        'only the first quality bar would pass it. Needs a second seeded quality.',
+        'one (unit, quality) group on this page, so expectBars\' bar COUNT is 1-versus-1: a ' +
+        'chart rendering only the first bar would pass it. Needs a second seeded quality or a ' +
+        'second unit.',
     });
   }
   // At JW is zero across the board, so a swap of the at-JW field to any other
   // always-zero source still survives (M7 dies only because at-JW now differs
   // from Unplaced). Stated here because the seed dispatch chose unplaced stock
   // over an at-JW position deliberately; this is the residual it leaves.
-  if ([...byQuality.values()].every((rows) => barTotal(rows, (r) => r.atJobWorkerBalance) === 0)) {
+  if (barGroups.every(({ rows }) => barTotal(rows, (r) => r.atJobWorkerBalance) === 0)) {
     test.info().annotations.push({
       type: 'unfalsifiable',
       description:
@@ -317,8 +367,9 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   // At JW is the discriminating chip on this seed: nothing sits at a job
   // worker, so every bar must collapse. In-house alone would be
   // indistinguishable from no filter at all.
-  const atJwIsTotal = [...byQuality.values()].every(
-    (rows) => barTotal(rows, (r) => r.atJobWorkerBalance) === barTotal(rows, (r) => r.totalBalance),
+  const atJwIsTotal = barGroups.every(
+    ({ rows }) =>
+      barTotal(rows, (r) => r.atJobWorkerBalance) === barTotal(rows, (r) => r.totalBalance),
   );
   if (atJwIsTotal) {
     test.info().annotations.push({
@@ -332,11 +383,11 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   // stopped being true the moment the seed gained awaiting-placement stock, so
   // it is computed from the data now: an annotation that describes a shape the
   // database no longer has is worse than none.
-  const inHouseIsTotal = [...byQuality.values()].every(
-    (rows) => barTotal(rows, (r) => r.inHouseBalance) === barTotal(rows, (r) => r.totalBalance),
+  const inHouseIsTotal = barGroups.every(
+    ({ rows }) => barTotal(rows, (r) => r.inHouseBalance) === barTotal(rows, (r) => r.totalBalance),
   );
-  const atJwIsUnplaced = [...byQuality.values()].every(
-    (rows) =>
+  const atJwIsUnplaced = barGroups.every(
+    ({ rows }) =>
       barTotal(rows, (r) => r.atJobWorkerBalance) ===
       barTotal(rows, (r) => r.awaitingPlacementBalance),
   );
@@ -383,7 +434,9 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   expect(target).toBeDefined();
   if (target === undefined || target.skuId === null) return;
 
-  await panel.locator(`[data-chart-segment="${target.qualityId}:${target.skuId}"]`).click();
+  await panel
+    .locator(`[data-chart-unit="${target.unit}"] [data-chart-segment="${target.qualityId}:${target.skuId}"]`)
+    .click();
   await expect(page).toHaveURL(new RegExp(`drill=quality%3A${target.qualityId}`));
   await expect(chips, 'the chips are unmounted while drilled, not disabled').toHaveCount(0);
 
