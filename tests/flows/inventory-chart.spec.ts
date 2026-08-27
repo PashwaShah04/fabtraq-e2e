@@ -287,6 +287,33 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   await expect(chips).toHaveCount(3);
   await expectBars((r) => r.totalBalance);
 
+  // Declared rather than left to be found: the bar-COUNT assertion inside
+  // expectBars is 1-versus-1 while one quality holds all the stock, so it
+  // cannot tell "the right number of bars" from "one bar" — the same shape as
+  // the beams I1 gap the seed rows were dispatched to close, reintroduced by
+  // the fix for it. Closing it needs a SECOND QUALITY in the seed, not a spec
+  // change. The per-bar VALUE assertions below have teeth either way.
+  if (byQuality.size === 1) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'one quality on this page, so expectBars\' bar COUNT is 1-versus-1: a chart rendering ' +
+        'only the first quality bar would pass it. Needs a second seeded quality.',
+    });
+  }
+  // At JW is zero across the board, so a swap of the at-JW field to any other
+  // always-zero source still survives (M7 dies only because at-JW now differs
+  // from Unplaced). Stated here because the seed dispatch chose unplaced stock
+  // over an at-JW position deliberately; this is the residual it leaves.
+  if ([...byQuality.values()].every((rows) => barTotal(rows, (r) => r.atJobWorkerBalance) === 0)) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'nothing sits at a job worker, so At JW is asserted at zero everywhere: a swap to any ' +
+        'other always-zero source would pass.',
+    });
+  }
+
   // At JW is the discriminating chip on this seed: nothing sits at a job
   // worker, so every bar must collapse. In-house alone would be
   // indistinguishable from no filter at all.

@@ -181,6 +181,10 @@ test('the beams tab rolls beams up by design with a kg subtotal, excluding cance
     // "element(s) not found", which says nothing about WHICH number moved.
     // The order is safe: BeamService sorts designs by name with the null bucket
     // last (`byNameNullsLast`), byte-for-byte what GROUP_ROLLUPS orders by.
+    // Declared limit on that claim: the two sorts are INDEPENDENT — Postgres
+    // collation on one side, `localeCompare` on the other — and with exactly
+    // one NAMED design only the null-bucket half of the rule is exercised. A
+    // second named design would exercise the comparison itself.
     await expect(panel.getByRole('img').nth(index)).toHaveAccessibleName(
       `${design.label}: ${kgLabel(design.netWeightKg)}`,
     );
