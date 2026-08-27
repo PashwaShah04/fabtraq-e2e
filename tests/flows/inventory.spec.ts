@@ -1,4 +1,6 @@
 import { test, expect } from '../../fixtures/test';
+import type { PositionAccum, RawLedgerRow } from '../../support/ledger-positions';
+import { accumulatePositions, LEDGER_POSITION_COLUMNS } from '../../support/ledger-positions';
 import { gotoAndExpect } from '../../support/nav';
 import { createSentinelPurchase } from '../../support/sentinel-purchase';
 
@@ -12,37 +14,24 @@ import { createSentinelPurchase } from '../../support/sentinel-purchase';
 // `/inventory/positions`.
 //
 // ORACLE — mirrors D2 exactly, in two stages, BOTH done in JS off raw,
-// UNGROUPED ledger rows (no SQL `GROUP BY` on `processed_types` — see the
-// note below for why):
-//   1) POSITION-level accumulation: the same 7-tuple `balanceGroupKey` in
-//      prisma-inventory.repository.ts uses (quality, sku, location, floor,
-//      jobWorker, processedTypes, unit), summed across lot numbers
-//      (lotNumber is deliberately excluded — a balance aggregates every
-//      lot), positive balances only.
+// UNGROUPED ledger rows:
+//   1) POSITION-level accumulation — `accumulatePositions` in
+//      support/ledger-positions.ts, shared with inventory-hub.spec.ts. That
+//      file documents the 7-tuple key, the custody normalization and why none
+//      of it happens in SQL.
 //   2) Roll positions UP to the stock-item level (quality, sku, canonical
 //      processedTypes, unit) — the overview's grouping — summing
 //      totalBalance and splitting into the three custody buckets (inHouse:
 //      locationId set; atJobWorker: jobWorkerId set; awaitingPlacement: both
 //      null), exactly as inventory-summary.helpers.ts
-//      `custodyBucketOf`/`rollupSummaryRows` does.
+//      `custodyBucketOf`/`rollupSummaryRows` does. Step 2 stays local: it is
+//      this spec's subject, and the hub's band needs only step 1.
 //
-// WHY NO SQL `GROUP BY sl.processed_types`: an earlier version of this spec
-// grouped positions via SQL. That version silently produced WRONG oracle
-// values — rows with an identical, empty `processed_types` array were
-// sometimes treated as separate groups by Postgres, hiding real discrepancies
-// instead of catching them. All accumulation now happens in plain JS,
-// matching this project's "compute in app, not DB" convention
-// ([[feedback_compute_in_app_not_db]]) and the BE's own `fetchPositions`
-// approach — immune to whatever affects SQL-level array grouping.
-//
-// CUSTODY NORMALIZATION (position-custody.ts, fixed during B-015): challan-out
-// writes its floor DEBIT leg with the destination job_worker_id stamped on as
-// provenance while keeping the source location/floor. The BE normalizes
-// jobWorkerId to null for any located row before grouping (a located row IS a
-// floor position — L4), so those debits net against the floor's credits
-// instead of splitting into a dropped hybrid bucket (the pre-fix behavior
-// overstated a 250−60−80=110 position as 250). The oracle below applies the
-// SAME normalization, so debit-history stock items are deliberately IN scope.
+// QUALITY-STATUS FILTER: this spec's `WHERE q.status = 'active'` is narrower
+// than the backend's read (`buildPositionsWhere` has no status filter), and
+// that is safe HERE only because every group below keys on qualityId — an
+// inactive quality cannot contaminate an active one's group. Any oracle that
+// sums across qualities (inventory-hub.spec.ts's band) must drop the filter.
 //
 // ROW SELECTION — the redesigned overview has no SKU/location/floor filter
 // (D3: only quality/unit/state), so a single quality can render several
@@ -51,39 +40,6 @@ import { createSentinelPurchase } from '../../support/sentinel-purchase';
 // same way the FE does: `${value.toFixed(3)} kg`) intersected with its SKU
 // name when the group has one — this needs no knowledge of the FE's
 // job-work-type label strings and is unique for any real balance figure.
-
-interface RawLedgerRow {
-  quality_id: string;
-  sku_id: string | null;
-  location_id: string | null;
-  floor_id: string | null;
-  job_worker_id: string | null;
-  processed_types: string[];
-  unit: string;
-  quality_name: string;
-  sku_name: string | null;
-  location_name: string | null;
-  floor_name: string | null;
-  job_worker_name: string | null;
-  in_quantity: string;
-  out_quantity: string;
-}
-
-interface PositionAccum {
-  qualityId: string;
-  qualityName: string;
-  skuId: string | null;
-  skuName: string | null;
-  locationId: string | null;
-  locationName: string | null;
-  floorId: string | null;
-  floorName: string | null;
-  jobWorkerId: string | null;
-  jobWorkerName: string | null;
-  processedTypes: string[];
-  unit: string;
-  balance: number;
-}
 
 interface StockItemGroup {
   qualityId: string;
@@ -99,10 +55,6 @@ interface StockItemGroup {
 }
 
 const RAW_STATE = 'raw';
-
-function canonicalProcessedTypes(types: readonly string[]): string[] {
-  return [...types].sort();
-}
 
 /** Mirrors fabtraq-fe's `lib/positions-url.ts` `encodeProcessedTypesState`. */
 function encodeState(types: readonly string[]): string {
@@ -127,64 +79,15 @@ test('overview row matches the ledger rollup for its stock item; positions detai
   page,
   db,
 }) => {
-  // 1) Raw, UNGROUPED ledger rows for every active quality (see the
-  // top-of-file note for why no SQL GROUP BY is used).
+  // 1) Raw, UNGROUPED ledger rows for every active quality, accumulated into
+  // positions by the shared oracle (see the top-of-file note on the filter).
   const rawRows = await db.queryMany<RawLedgerRow>(
-    `SELECT sl.quality_id, sl.sku_id, sl.location_id, sl.floor_id, sl.job_worker_id,
-            sl.processed_types::text[] AS processed_types, sl.unit::text AS unit,
-            q.name AS quality_name, s.name AS sku_name,
-            l.name AS location_name, f.name AS floor_name, jw.name AS job_worker_name,
-            sl.in_quantity::text AS in_quantity, sl.out_quantity::text AS out_quantity
-     FROM stock_ledger sl
-     JOIN yarn_qualities q ON q.id = sl.quality_id
-     LEFT JOIN yarn_skus s ON s.id = sl.sku_id
-     LEFT JOIN locations l ON l.id = sl.location_id
-     LEFT JOIN location_floors f ON f.id = sl.floor_id
-     LEFT JOIN job_workers jw ON jw.id = sl.job_worker_id
+    `${LEDGER_POSITION_COLUMNS}
      WHERE q.status = 'active'`,
   );
   expect(rawRows.length, 'seed must provide at least one active-quality ledger row').toBeGreaterThan(0);
 
-  // Position-level accumulation (the 7-tuple `balanceGroupKey` in
-  // prisma-inventory.repository.ts uses), positive balances only.
-  const positionMap = new Map<string, PositionAccum>();
-  for (const r of rawRows) {
-    const canonical = canonicalProcessedTypes(r.processed_types);
-    // Custody normalization, mirroring the BE's position-custody.ts: a located
-    // row is a floor position; job_worker_id on it is provenance, not position.
-    const jobWorkerId = r.location_id !== null ? null : r.job_worker_id;
-    const jobWorkerName = r.location_id !== null ? null : r.job_worker_name;
-    const key = [
-      r.quality_id,
-      r.sku_id ?? '∅',
-      r.location_id ?? '∅',
-      r.floor_id ?? '∅',
-      jobWorkerId ?? '∅',
-      r.unit,
-      canonical.join(','),
-    ].join('\x00');
-    let p = positionMap.get(key);
-    if (p === undefined) {
-      p = {
-        qualityId: r.quality_id,
-        qualityName: r.quality_name,
-        skuId: r.sku_id,
-        skuName: r.sku_name,
-        locationId: r.location_id,
-        locationName: r.location_name,
-        floorId: r.floor_id,
-        floorName: r.floor_name,
-        jobWorkerId,
-        jobWorkerName,
-        processedTypes: canonical,
-        unit: r.unit,
-        balance: 0,
-      };
-      positionMap.set(key, p);
-    }
-    p.balance += Number(r.in_quantity) - Number(r.out_quantity);
-  }
-  const positions = [...positionMap.values()].filter((p) => p.balance > 0);
+  const positions = accumulatePositions(rawRows);
   expect(positions.length, 'seed must provide at least one positive-balance position').toBeGreaterThan(0);
 
   // 2) Roll positions up to the stock-item level (D2), in JS.

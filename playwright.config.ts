@@ -74,7 +74,18 @@ export default defineConfig({
       // this always wins over whatever `.env` has. PORT is set the same way,
       // for the same reason: the BE worktree may have no `.env` at all, so
       // the port must be able to arrive purely via the environment.
-      env: { RATE_LIMIT_AUTH_MAX: '2000', PORT: String(apiPort) },
+      // CORS_ORIGIN must be derived from BASE_URL for the same reason the
+      // ports are: fabtraq-be defaults it to `http://localhost:5173`
+      // (config/env.ts), so a suite pointed at any other FE port booted fine
+      // and then had EVERY xhr rejected by the browser's CORS check —
+      // `/auth/login` included, so it presented as "the app never leaves
+      // /login", not as a configuration error. Found running this suite at
+      // 5199 per B-043's workaround.
+      env: {
+        RATE_LIMIT_AUTH_MAX: '2000',
+        PORT: String(apiPort),
+        CORS_ORIGIN: BASE_URL,
+      },
     },
     {
       // `--strictPort` closes a latent bug: without it, Vite silently
