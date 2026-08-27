@@ -1,23 +1,34 @@
 /**
  * Shared fixture queries for "find me a raw lot with real balance on a floor".
  *
- * FIXTURE-BALANCE CONTRACT (see fs1-diagnosis.md). A floor position must be
- * summed the way the app's own authority sums it: `findLotLocationBalance`
- * (fabtraq-be `prisma-inventory.service.ts`) filters lotNumber + locationId +
- * floorId + unit and **no jobWorkerId**. Every copy of this query used to carry
- * `AND s.job_worker_id IS NULL`, which is:
+ * FIXTURE-BALANCE CONTRACT (see fs1-diagnosis.md). A located ledger row IS a
+ * floor position. Challan-out writes its floor DEBIT leg with the destination
+ * `jobWorkerId` stamped on as provenance while keeping the source
+ * `locationId`/`floorId` — so a row carrying BOTH is a floor row with
+ * provenance, not an at-job-worker position. Only rows with no `locationId`
+ * are at-JW, and those have no `floor_id` either, so `JOIN location_floors`
+ * already excludes every one of them.
  *
- *  - redundant for its stated purpose ("a floor position, not an at-JW
- *    position") — at-JW legs carry `floor_id IS NULL`, so `JOIN
- *    location_floors` already excludes every one of them; and
- *  - actively wrong, because it HID the floor debits that DO carry a
- *    jobWorkerId. The seed's S2/S3 chains hand-write exactly those: 50 KG on
- *    Ground Floor and 100 KG on First Floor of LOT-260324-0001.
+ * The app states this rule in one place and routes every position
+ * accumulation through it: `positionCustodyJobWorker`
+ * (fabtraq-be `src/modules/inventory/position-custody.ts`), which normalizes
+ * `jobWorkerId` to null whenever `locationId` is set. Its own doc comment
+ * records what happens otherwise, found live during B-015: "a 250 kg purchase
+ * with 60+80 kg challan-out debits read back as 250 kg, not 110 kg —
+ * systematically overstating in-house balances by everything ever dispatched
+ * from that floor." The guard that rejects an over-issue,
+ * `findLotLocationBalance` (`prisma-inventory.service.ts`), filters
+ * lotNumber + locationId + floorId + unit and no `jobWorkerId` at all.
  *
- * The balance was therefore over-reported by up to 100 KG, the query never fell
- * through as the suite drained the lot, and it kept handing tests a floor whose
- * real balance was 2 KG. The JW-Out POST then 400s
- * INSUFFICIENT_BALANCE_AT_FLOOR and no "Saved" toast ever appears.
+ * Every copy of this query used to carry `AND s.job_worker_id IS NULL` — the
+ * pre-B-015 accounting, never migrated. It hid the floor debits that carry a
+ * jobWorkerId; the seed's S2/S3 chains hand-write exactly those (50 KG on
+ * Ground Floor and 100 KG on First Floor of LOT-260324-0001). The balance was
+ * therefore over-reported by up to 100 KG, the query never fell through as the
+ * suite drained the lot, and it kept handing tests a floor whose real balance
+ * was 2 KG. The JW-Out POST then 400s INSUFFICIENT_BALANCE_AT_FLOOR and no
+ * "Saved" toast ever appears. `weaving-dispatch.spec.ts:108-112` reached the
+ * same conclusion independently and had already dropped the predicate.
  *
  * The ORDER BY tiebreak is the other half. LOT-260324-0001 sits on TWO floors,
  * so `ORDER BY s.lot_number LIMIT 1` left the choice to the planner's
@@ -25,7 +36,10 @@
  * `db:seed`. Ordering by balance DESC picks the floor with the most headroom
  * and `f.id` makes an exact tie deterministic.
  *
- * Keep BOTH properties in any new copy of this shape.
+ * Keep BOTH properties in any new copy of this shape. They are redundant
+ * defences, not a chain: either one alone keeps the suite green, and they are
+ * kept for different reasons — the balance must agree with the guard, the
+ * ordering must be deterministic.
  */
 
 /** ORDER BY that every fixture pick of this shape must end with. */
