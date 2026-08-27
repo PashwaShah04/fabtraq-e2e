@@ -26,8 +26,10 @@ const ROUTES = [
   '/beams',
   '/inventory',
   '/inventory/lots',
-  // Seeded raw-lot referenced by support/lots.ts — LOT-260324-0001 sits on
-  // two floors, so it is guaranteed present wherever RAW_FLOOR_LOT_SQL is.
+  // Hand-seeded raw lot, not a query result: support/lots.ts:26-27 names it by
+  // literal ("the seed's S2/S3 chains hand-write exactly those ... of
+  // LOT-260324-0001") as one of the fixed floor legs `db:seed` always writes,
+  // independent of RAW_FLOOR_LOT_SQL's own runtime query/tiebreak.
   '/inventory/lots/LOT-260324-0001',
   '/inventory/trace',
   '/inventory/positions',
