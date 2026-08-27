@@ -6,6 +6,7 @@ import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
 import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { RAW_LOT_ORDER } from '../../support/lots';
 
 // Beam Register (`/beams`) is READ-ONLY — list + detail, no create/edit. Beams are
 // registered as a side effect of the beam-receipt flow (see beam-receipt.spec.ts,
@@ -264,15 +265,12 @@ test('a beam receipt with beams sourced from two different job workers shows the
      JOIN yarn_skus sku ON sku.id = s.sku_id
      WHERE s.lot_number IS NOT NULL
        AND s.sku_id IS NOT NULL
-       AND s.job_worker_id IS NULL
        AND l.status = 'active' AND f.status = 'active'
        AND q.status = 'active' AND sku.status = 'active'
        AND cardinality(s.processed_types) = 0
      GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
               sku.name, sku.shade_number, l.id, l.name, f.name, f.id
-     HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-     ORDER BY s.lot_number
-     LIMIT 1`,
+     HAVING SUM(s.in_quantity - s.out_quantity) >= $1${RAW_LOT_ORDER}`,
     [Q_WARP],
   );
   expect(src, 'seed must provide a raw lot with >= Q_WARP balance').not.toBeNull();

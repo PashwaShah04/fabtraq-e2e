@@ -11,6 +11,7 @@ import {
   clickButton,
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { RAW_LOT_ORDER } from '../../support/lots';
 import type { Db } from '../../fixtures/db';
 
 // JW Challan In "dyed" — PER-LOT SOURCES FORM (spec 2026-07-23, supersedes
@@ -93,16 +94,13 @@ async function resolveDyeableRawLot(db: Db, minQty: number): Promise<RawLotRow> 
      JOIN yarn_skus sku ON sku.id = s.sku_id
      WHERE s.lot_number IS NOT NULL
        AND s.sku_id IS NOT NULL
-       AND s.job_worker_id IS NULL
        AND l.status = 'active' AND f.status = 'active'
        AND q.status = 'active' AND sku.status = 'active'
        AND cardinality(s.processed_types) = 0
        AND sku.shade_number IS NOT NULL AND sku.shade_number <> ''
      GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
               sku.name, sku.shade_number, l.name, f.name, f.id
-     HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-     ORDER BY s.lot_number
-     LIMIT 1`,
+     HAVING SUM(s.in_quantity - s.out_quantity) >= $1${RAW_LOT_ORDER}`,
     [minQty],
   );
   expect(
@@ -133,16 +131,13 @@ async function resolveDyeableRawLotExcludingSku(
      WHERE s.lot_number IS NOT NULL
        AND s.sku_id IS NOT NULL
        AND s.sku_id <> $2
-       AND s.job_worker_id IS NULL
        AND l.status = 'active' AND f.status = 'active'
        AND q.status = 'active' AND sku.status = 'active'
        AND cardinality(s.processed_types) = 0
        AND sku.shade_number IS NOT NULL AND sku.shade_number <> ''
      GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
               sku.name, sku.shade_number, l.name, f.name, f.id
-     HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-     ORDER BY s.lot_number
-     LIMIT 1`,
+     HAVING SUM(s.in_quantity - s.out_quantity) >= $1${RAW_LOT_ORDER}`,
     [minQty, excludeSkuId],
   );
   expect(

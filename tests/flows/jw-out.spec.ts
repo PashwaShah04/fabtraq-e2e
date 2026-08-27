@@ -8,6 +8,7 @@ import {
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 import { createSentinelPurchase, createSkuPurchase } from '../../support/sentinel-purchase';
+import { RAW_FLOOR_LOT_SQL } from '../../support/lots';
 
 // JW Challan Out moves stock OUT of a floor position and INTO an at-job-worker
 // position (jw-challan-out.service.ts `applyChallanOutLedger` writes two ledger
@@ -35,28 +36,13 @@ test(
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
     // Derive the source position from the ledger exactly the way
-    // SourceLotPicker + AvailableFloorSelect will render it:
-    //  - floorId/locationId NOT NULL: a floor position, not an at-JW position
-    //    (SourceLotPicker's underlying `listAggregatedLots` rolls up per-floor
-    //    balances into `placements[]`; only floor rows can appear there). There is
-    //    deliberately NO `jobWorkerId IS NULL` predicate: at-JW legs already carry
-    //    floor_id IS NULL, so the JOIN excludes them, while some floor DEBITS do
-    //    carry a jobWorkerId (the seed's S2/S3 chains: 50 KG on Ground Floor,
-    //    100 KG on First Floor). Filtering them out over-reported this floor by up
-    //    to 100 KG relative to the app's own `findLotLocationBalance`, so the query
-    //    never fell through as the suite drained the lot and eventually handed this
-    //    test a floor holding 2 KG — a 400 INSUFFICIENT_BALANCE_AT_FLOOR and no
-    //    "Saved" toast. The ORDER BY tiebreak is the other half: this lot sits on
-    //    two floors, and `ORDER BY s.lot_number` alone left the choice to the
-    //    planner's group-key sort, i.e. to the random floor UUID. See
-    //    fs1-diagnosis.md.
-    //  - cardinality(processed_types) = 0: a raw/unprocessed lot. `isValidInputState`
-    //    (fabtraq-shared primitives/job-work.ts) requires `!P.has('twisting') &&
-    //    !hasAny(['warping','sizing','weaving'])` for the 'twisting' operation — a raw
-    //    lot always satisfies this, so picking 'twisting' as the challan's operation
-    //    is guaranteed valid input for whatever raw lot we find here.
-    //  - status = 'active' on location/floor/quality/sku: mirrors the active-only
-    //    filters the FE's own master-data selects apply.
+    // SourceLotPicker + AvailableFloorSelect will render it — shared query, so
+    // the floor-balance contract and the ORDER BY tiebreak are defined once.
+    // Its `cardinality(processed_types) = 0` filter is what makes 'twisting'
+    // guaranteed-valid input here: `isValidInputState` (fabtraq-shared
+    // primitives/job-work.ts) requires `!P.has('twisting') &&
+    // !hasAny(['warping','sizing','weaving'])`, which a raw lot always
+    // satisfies. See support/lots.ts.
     const src = await db.queryOne<{
       lot_number: string;
       sku_id: string;
@@ -68,25 +54,7 @@ test(
       floor_name: string;
       floor_id: string;
     }>(
-      `SELECT s.lot_number, s.sku_id, s.quality_id,
-              q.code AS quality_code, q.name AS quality_name,
-              sku.name AS sku_name, sku.shade_number AS sku_shade_number,
-              l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
-       FROM stock_ledger s
-       JOIN location_floors f ON f.id = s.floor_id
-       JOIN locations l ON l.id = f.location_id
-       JOIN yarn_qualities q ON q.id = s.quality_id
-       JOIN yarn_skus sku ON sku.id = s.sku_id
-       WHERE s.lot_number IS NOT NULL
-         AND s.sku_id IS NOT NULL
-         AND l.status = 'active' AND f.status = 'active'
-         AND q.status = 'active' AND sku.status = 'active'
-         AND cardinality(s.processed_types) = 0
-       GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
-                sku.name, sku.shade_number, l.name, f.name, f.id
-       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-       ORDER BY s.lot_number, SUM(s.in_quantity - s.out_quantity) DESC, f.id
-       LIMIT 1`,
+      RAW_FLOOR_LOT_SQL,
       [Q],
     );
     expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();

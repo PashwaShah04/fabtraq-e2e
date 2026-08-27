@@ -4,6 +4,7 @@ import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
 import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { RAW_LOT_ORDER } from '../../support/lots';
 
 // A fresh purchase-origin beam, status='received'. weaverId is optional —
 // pass it to pre-set a PLANNED weaver (WD-L6: "receipt-time weaver is a
@@ -143,9 +144,7 @@ test(
          AND q.status = 'active' AND sku.status = 'active'
        GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
                 sku.name, sku.shade_number, l.name, f.name, f.id
-       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-       ORDER BY s.lot_number
-       LIMIT 1`,
+       HAVING SUM(s.in_quantity - s.out_quantity) >= $1${RAW_LOT_ORDER}`,
       [Q_WEFT],
     );
     expect(src, 'seed must provide a lot with >= Q_WEFT balance on an active floor').not.toBeNull();
