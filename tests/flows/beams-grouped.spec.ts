@@ -14,23 +14,27 @@ import { gotoAndExpect } from '../../support/nav';
 // through each segment's `title` (StackedBar.tsx:88, set on the <button> and
 // the <span> branch alike).
 //
-// SEED REALITY, stated up front because it bounds what these tests prove: a
-// freshly seeded fabtraq_dev holds 4 beams, ALL with `design_id IS NULL` and
-// `colourway_id IS NULL`, all `received`, none cancelled. So:
+// SEED REALITY, stated up front because it bounds what these tests prove. A
+// freshly seeded fabtraq_dev holds FIVE beams: four live and one cancelled
+// (BEAM-C-004). Two of the live ones (BEAM-C-002/003) link design DSN-001 on
+// two DIFFERENT colour-ways; the other two carry no design at all. So there are
+// two design groups — `SEED-DESIGN-V2` (2 colour-ways) and `No design` (1) —
+// and every count assertion below is 2-versus-2 or 2-versus-1 rather than the
+// 1-versus-1 it used to be. Concretely, that seed shape is what makes these
+// falsifiable:
 //
-//   - the DESIGN-LINKED grouping path has NO live coverage here. The drill
-//     test below exercises the full depth through the `no-design` bucket
-//     instead of skipping (which is what the brief's draft did, leaving the
-//     beam drill with zero live coverage at all) — but a design group that
-//     resolves its NAME is exercised only by the unit tests, whose MSW
-//     fixture is design-bearing on purpose.
-//   - the cancelled-exclusion filter is UNFALSIFIABLE on this seed: with zero
-//     cancelled rows the `status <> 'cancelled'` clause is a no-op on both
-//     sides of the assertion. Annotated per run rather than passing silently.
-//   - with ONE design group holding ONE colour-way, the two bar-COUNT
-//     assertions are 1-versus-1: a view rendering only the first design and
-//     only the first colour-way would pass them. Annotated per run; closing it
-//     needs a design-linked seed row, not a spec change.
+//   - `groups.slice(0, 1)` and `colourways.slice(0, 1)` in `beamDrillView` both
+//     RED the bar-count assertions. With one group each they were no-ops.
+//   - the `status <> 'cancelled'` filter is a real filter: dropping it on the
+//     application side (`prisma-beam.repository.ts` `findGrouped`) pulls
+//     BEAM-C-004 into the No-design bucket and reds the design rollup.
+//   - the drill runs through a NAMED design, so the design-name crumb and a
+//     UUID drill value are exercised live.
+//
+// Still unfalsifiable here, and annotated per run rather than passing silently:
+// every live beam is `received`, so the `issued_to_weaver` and
+// `fabric_received` status buckets are asserted at zero and a swap between
+// those two would not be caught.
 //
 // Not touched, deliberately: `mockBeamsGrouped`'s empty `colourway.beams[]`
 // arrays diverge from the live endpoint's populated ones (Task 13). Nothing
@@ -164,13 +168,22 @@ test('the beams tab rolls beams up by design with a kg subtotal, excluding cance
   // which a per-rollup visibility loop alone would not catch.
   await expect(panel.getByRole('img')).toHaveCount(designs.length);
 
-  for (const design of designs) {
+  for (const [index, design] of designs.entries()) {
     // The bar's accessible name is `${label}: ${kgLabel}` — the D7 kg subtotal
     // rendered verbatim in place of the summed count. Asserted against the
     // ledger's own SUM(net_weight), not a literal.
-    await expect(
-      panel.getByLabel(`${design.label}: ${kgLabel(design.netWeightKg)}`, { exact: true }),
-    ).toBeVisible();
+    //
+    // Located by INDEX and asserted with toHaveAccessibleName rather than
+    // looked up with getByLabel(name): a wrong subtotal must red with an
+    // Expected/Received value, not with a locator that stops resolving. That
+    // matters for the cancelled-exclusion mutant specifically — dropping the
+    // filter changes this bar's kg, and a getByLabel would have died on
+    // "element(s) not found", which says nothing about WHICH number moved.
+    // The order is safe: BeamService sorts designs by name with the null bucket
+    // last (`byNameNullsLast`), byte-for-byte what GROUP_ROLLUPS orders by.
+    await expect(panel.getByRole('img').nth(index)).toHaveAccessibleName(
+      `${design.label}: ${kgLabel(design.netWeightKg)}`,
+    );
 
     // The axis the bar actually DRAWS, which the kg accessible name says
     // nothing about: each segment is one colour-way and its value is that

@@ -265,10 +265,22 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
   const chips = panel.locator('button[aria-pressed]');
   const chip = (name: string) => panel.getByRole('button', { name, exact: true });
 
+  // Bars are located by INDEX and asserted with toHaveAccessibleName rather
+  // than looked up by name: a chip reading the wrong custody field must red on
+  // an Expected/Received value, not on a locator that stops resolving. The
+  // order is safe — `yarnDrillView` groups level-0 rows by quality in the order
+  // the summary page returns them, which is the order `byQuality` is built in.
+  // The count assertion is the yarn half of review Minor 5: nothing else here
+  // pins how MANY bars the chart draws.
   async function expectBars(pick: (row: SummaryRow) => number): Promise<void> {
+    const bars = panel.getByRole('img');
+    await expect(bars).toHaveCount(byQuality.size);
+    let index = 0;
     for (const rows of byQuality.values()) {
-      const name = `${rows[0]?.qualityName ?? ''}: ${num(barTotal(rows, pick))} KG`;
-      await expect(panel.getByLabel(name, { exact: true })).toBeVisible();
+      await expect(bars.nth(index)).toHaveAccessibleName(
+        `${rows[0]?.qualityName ?? ''}: ${num(barTotal(rows, pick))} KG`,
+      );
+      index += 1;
     }
   }
 
@@ -289,13 +301,28 @@ test('custody chips re-slice the level-0 bars and vanish once drilled', async ({
         're-slice below cannot be told apart from no filter at all.',
     });
   }
-  test.info().annotations.push({
-    type: 'unfalsifiable',
-    description:
-      'on a fully-in-house seed the chips are only partly falsifiable: In-house reads the same ' +
-      'as totalBalance, and At JW reads the same as Unplaced (both zero), so a field swap ' +
-      'within either pair would pass. Same seed gap as the custody leaf above.',
-  });
+  // Was an UNCONDITIONAL annotation asserting the seed is fully in-house. It
+  // stopped being true the moment the seed gained awaiting-placement stock, so
+  // it is computed from the data now: an annotation that describes a shape the
+  // database no longer has is worse than none.
+  const inHouseIsTotal = [...byQuality.values()].every(
+    (rows) => barTotal(rows, (r) => r.inHouseBalance) === barTotal(rows, (r) => r.totalBalance),
+  );
+  const atJwIsUnplaced = [...byQuality.values()].every(
+    (rows) =>
+      barTotal(rows, (r) => r.atJobWorkerBalance) ===
+      barTotal(rows, (r) => r.awaitingPlacementBalance),
+  );
+  if (inHouseIsTotal || atJwIsUnplaced) {
+    test.info().annotations.push({
+      type: 'unfalsifiable',
+      description:
+        'the chips are only partly falsifiable on this data: ' +
+        (inHouseIsTotal ? 'In-house reads the same as totalBalance. ' : '') +
+        (atJwIsUnplaced ? 'At JW reads the same as Unplaced. ' : '') +
+        'A field swap within a coinciding pair would pass.',
+    });
+  }
 
   await chip('At JW').click();
   await expect(chip('At JW')).toHaveAttribute('aria-pressed', 'true');
