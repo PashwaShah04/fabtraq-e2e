@@ -36,9 +36,20 @@ test(
 
     // Derive the source position from the ledger exactly the way
     // SourceLotPicker + AvailableFloorSelect will render it:
-    //  - jobWorkerId IS NULL + floorId/locationId NOT NULL: a floor position, not an
-    //    at-JW position (SourceLotPicker's underlying `listAggregatedLots` rolls up
-    //    per-floor balances into `placements[]`; only floor rows can appear there).
+    //  - floorId/locationId NOT NULL: a floor position, not an at-JW position
+    //    (SourceLotPicker's underlying `listAggregatedLots` rolls up per-floor
+    //    balances into `placements[]`; only floor rows can appear there). There is
+    //    deliberately NO `jobWorkerId IS NULL` predicate: at-JW legs already carry
+    //    floor_id IS NULL, so the JOIN excludes them, while some floor DEBITS do
+    //    carry a jobWorkerId (the seed's S2/S3 chains: 50 KG on Ground Floor,
+    //    100 KG on First Floor). Filtering them out over-reported this floor by up
+    //    to 100 KG relative to the app's own `findLotLocationBalance`, so the query
+    //    never fell through as the suite drained the lot and eventually handed this
+    //    test a floor holding 2 KG — a 400 INSUFFICIENT_BALANCE_AT_FLOOR and no
+    //    "Saved" toast. The ORDER BY tiebreak is the other half: this lot sits on
+    //    two floors, and `ORDER BY s.lot_number` alone left the choice to the
+    //    planner's group-key sort, i.e. to the random floor UUID. See
+    //    fs1-diagnosis.md.
     //  - cardinality(processed_types) = 0: a raw/unprocessed lot. `isValidInputState`
     //    (fabtraq-shared primitives/job-work.ts) requires `!P.has('twisting') &&
     //    !hasAny(['warping','sizing','weaving'])` for the 'twisting' operation — a raw
@@ -68,14 +79,13 @@ test(
        JOIN yarn_skus sku ON sku.id = s.sku_id
        WHERE s.lot_number IS NOT NULL
          AND s.sku_id IS NOT NULL
-         AND s.job_worker_id IS NULL
          AND l.status = 'active' AND f.status = 'active'
          AND q.status = 'active' AND sku.status = 'active'
          AND cardinality(s.processed_types) = 0
        GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
                 sku.name, sku.shade_number, l.name, f.name, f.id
        HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-       ORDER BY s.lot_number
+       ORDER BY s.lot_number, SUM(s.in_quantity - s.out_quantity) DESC, f.id
        LIMIT 1`,
       [Q],
     );
