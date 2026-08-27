@@ -26,6 +26,10 @@ const ROUTES = [
   '/beams',
   '/inventory',
   '/inventory/lots',
+  // Seeded raw-lot referenced by support/lots.ts — LOT-260324-0001 sits on
+  // two floors, so it is guaranteed present wherever RAW_FLOOR_LOT_SQL is.
+  '/inventory/lots/LOT-260324-0001',
+  '/inventory/trace',
   '/inventory/positions',
   '/place-stock',
   '/stock-transfers',
@@ -34,6 +38,7 @@ const ROUTES = [
   '/fabric-designs',
   '/weaving-ins',
   '/fabric-takas',
+  '/reports/wastage',
 ] as const;
 
 for (const route of ROUTES) {
