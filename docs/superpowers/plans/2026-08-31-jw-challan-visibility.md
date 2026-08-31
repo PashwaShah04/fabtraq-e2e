@@ -21,7 +21,11 @@ writers, so the seed cannot drift from the convention again.
 - Branch: **`feat/inventory-rewoven` in all four repos.** No new branches, no worktrees.
 - Node 22 only. npm only. No new dependencies.
 - No `any`, no `.js` import extensions, no default exports, no `console.*`.
-- `fabtraq-shared` version: **1.26.0 → 1.27.0**, published to GitHub Packages (owner decision D3). Minor, matching precedent for additive response fields. Consumers are `fabtraq-be` and `fabtraq-fe` only. Publish from `main`'s package.json baseline and diff the built `.d.ts` against the published tarball before publishing — the local `package.json` lies.
+- `fabtraq-shared` version: **1.26.0 → 1.27.0**, published to GitHub Packages (owner decision D3). Minor, matching precedent for additive response fields. Consumers are `fabtraq-be` and `fabtraq-fe` only.
+  - **The registry is the authority, not local `package.json`.** Checked 2026-08-31: local said `1.26.0` while the registry topped out at `1.25.0` — 1.26.0 had been bumped and consumed by BE/FE (`^1.26.0`, installed) but never published, so a clean `npm ci` on this branch could not resolve it. 1.26.0 has since been published. Always `npm view @pashwashah04/fabtraq-shared version` first.
+  - **`npm publish` packs the WORKING TREE, not the commit.** `prepare: tsup` rebuilds `dist/` at publish time from whatever is on disk, so publishing "version N" while newer schema work sits uncommitted in `src/` silently ships that work inside version N. Before publishing: `git stash push -- src/ tests/`, confirm `git status --porcelain` shows only docs, build, run the export diff, publish, then `git stash pop`.
+  - **Export diff before every publish:** `npm pack @pashwashah04/fabtraq-shared@<published latest> --pack-destination <tmp>`, then compare the exported names in its `dist/index.d.ts` against the local build's. Anything present in the published one and missing locally is an export you are about to delete. For 1.26.0 this read 0 removed / 53 added, and confirmed `outItemRollupSchema` was correctly ABSENT — which is what proved the stash had held.
+  - Consumers install a local `--no-save` tarball until Task 8 publishes. After any tarball install in `fabtraq-fe`, `rm -rf node_modules/.vite` or the dev server keeps bundling the stale schema. Verify at RUNTIME (`require(...).outItemRollupSchema`), not by grepping `node_modules` — the two disagreed once on this box.
 - Tolerance for "is anything still pending" is the existing kg tolerance constant, never a bare `> 0` — a float residue would resurrect the dead button.
 - Commit after each task. Pushes batched at the end of the workstream.
 - BE integration tests run against the isolated **`fabtraq_test`** DB via a `DATABASE_URL` override. They wipe whatever DB they touch; never let them inherit the dev `.env`.
@@ -31,7 +35,7 @@ writers, so the seed cannot drift from the convention again.
 
 ---
 
-### Task 1: Shared — `outItemRollupSchema` on the out-item response
+### Task 1: Shared — `outItemRollupSchema` on the out-item response  ✅ DONE (fd81c43, comment fix 21241a0)
 
 **Files:**
 - Modify: `fabtraq-shared/src/schemas/transaction/jw-challan-out.ts` (`jwChallanOutItemResponseSchema`)
@@ -52,16 +56,16 @@ list. That is the intended cost of `required` — see spec §3.1 for why optiona
 is rejected — but the spec's "the list endpoint is untouched" line is wrong and
 is corrected in the same commit.
 
-- [ ] **Step 1: Write the failing schema tests**
+- [x] **Step 1: Write the failing schema tests**
   - A fixture out-item without `rollup` must now fail `jwChallanOutResponseSchema.safeParse`.
   - A fixture with a complete `rollup` must parse, and `pendingAtJW` must reject a negative.
-- [ ] **Step 2: Add `outItemRollupSchema`** with the seven fields mirroring the BE's `OutItemRollup`, each doc-commented, and wire `rollup` into `jwChallanOutItemResponseSchema`.
-- [ ] **Step 3: Bump to 1.27.0.** Do not publish yet — Task 8 publishes once, after BE and FE are green against a local tarball.
-- [ ] **Step 4:** `format:check`, `lint`, `typecheck`, `test`, `build` green.
+- [x] **Step 2: Add `outItemRollupSchema`** with the seven fields mirroring the BE's `OutItemRollup`, each doc-commented, and wire `rollup` into `jwChallanOutItemResponseSchema`.
+- [x] **Step 3: Bump to 1.27.0.** Do not publish yet — Task 8 publishes once, after BE and FE are green against a local tarball.
+- [x] **Step 4:** `format:check`, `lint`, `typecheck`, `test`, `build` green.
 
 ---
 
-### Task 2: BE — populate the rollup on all five response paths
+### Task 2: BE — populate the rollup on all five response paths  ✅ DONE (ed2fbdc)
 
 **Files:**
 - Modify: `fabtraq-be/src/modules/jw-challan-out/jw-challan-out.mapper.ts`
@@ -74,17 +78,17 @@ is corrected in the same commit.
 - Consumes: Task 1's schema.
 - Produces: every JW-Out response carries a true rollup.
 
-- [ ] **Step 1: Failing mapper test** — a mapped response without a supplied rollup must throw at the `jwChallanOutResponseSchema.parse` boundary the mapper already runs.
-- [ ] **Step 2: Extend the mapper** with a third parameter `rollupMap: ReadonlyMap<string, OutItemRollup>`, following the existing `lockMap` parameter precedent exactly. **Not defaulted** — TypeScript must force every call site to supply it. A default empty map would let a caller silently ship a response that then throws at parse, converting a compile error into a runtime 500.
-- [ ] **Step 3: One private helper on the service** that fetches the rollup for a row's items via `this.inventory.getOutItemRollup({ outItemIds, tx })` and calls the mapper. Repoint all five call sites at it.
+- [x] **Step 1: Failing mapper test** — a mapped response without a supplied rollup must throw at the `jwChallanOutResponseSchema.parse` boundary the mapper already runs.
+- [x] **Step 2: Extend the mapper** with a third parameter `rollupMap: ReadonlyMap<string, OutItemRollup>`, following the existing `lockMap` parameter precedent exactly. **Not defaulted** — TypeScript must force every call site to supply it. A default empty map would let a caller silently ship a response that then throws at parse, converting a compile error into a runtime 500.
+- [x] **Step 3: One private helper on the service** that fetches the rollup for a row's items via `this.inventory.getOutItemRollup({ outItemIds, tx })` and calls the mapper. Repoint all five call sites at it.
   - The list path must collect every item id across the **whole page** and make **one** call, hoisted above the `items.map`. `getOutItemRollup` issues a fixed ~6 reads regardless of id count (verified), so batching keeps the list at a fixed per-page cost.
   - **Do not copy the neighbouring shape:** `list` resolves placement locks per row (`Promise.all(items.map(… resolveLocksForOutRow(row)))`, `jw-challan-out.service.ts:218-223`). Mirroring that for the rollup would make it N-per-page.
-- [ ] **Step 4: Integration test** — `GET /jw-challans-out/:id` on the seeded fully-received challan returns `pendingAtJW === 0` and `fullyReceived === true` for both items; a partially-received fixture returns a non-zero `pendingAtJW`. Happy + error path per the done-ness bar.
-- [ ] **Step 5:** re-emit OpenAPI; the CI drift gate must be green. Full BE gate set.
+- [x] **Step 4: Integration test** — `GET /jw-challans-out/:id` on the seeded fully-received challan returns `pendingAtJW === 0` and `fullyReceived === true` for both items; a partially-received fixture returns a non-zero `pendingAtJW`. Happy + error path per the done-ness bar.
+- [x] **Step 5:** re-emit OpenAPI; the CI drift gate must be green. Full BE gate set.
 
 ---
 
-### Task 3: BE — seed through the real ledger writers (F4)
+### Task 3: BE — seed through the real ledger writers (F4)  ⏳ IN PROGRESS
 
 **Files:**
 - Modify: `fabtraq-be/prisma/seed.ts` (8 hand-rolled `stockLedger.create` calls at ~503, ~587, ~700, ~781, ~924, ~945, ~1037, ~1154)
