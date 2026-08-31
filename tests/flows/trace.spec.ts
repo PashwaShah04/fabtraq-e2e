@@ -29,9 +29,117 @@ test('traces a purchase lot through job work and surfaces the per-hop invariant'
   page,
   db,
 }) => {
-  // A purchase lot that was dispatched to a job worker AND came back — the
-  // longest chain the seed guarantees. Ordered by lot number so the pick is
-  // deterministic across runs.
+  // THIS SPEC OWNS ITS CHAIN.
+  //
+  // It used to take the earliest seeded purchase lot that had been dispatched
+  // and returned. That pick is deterministic, but the GRAPH it reaches is not:
+  // roughly twenty sibling specs dispatch from the same seeded lot, so by the
+  // time this ran in a full suite the lineage held ~18 downstream lots instead
+  // of 2. Passing alone and failing in the suite is the signature — the
+  // control experiment (this spec alone on a fresh seed) passed while the full
+  // run failed the edge-angle assertion at 76.3deg.
+  //
+  // Density is exactly what the layout assertions below measure, so a graph
+  // whose size depends on how many other specs ran cannot measure anything.
+  // The fixture is private; the ORACLE is still the database, queried back
+  // through the same rollup as before.
+  const masters = await db.queryOne<{
+    quality_id: string;
+    vendor_id: string;
+    job_worker_id: string;
+    location_id: string;
+    floor_id: string;
+  }>(
+    `SELECT (SELECT id FROM yarn_qualities WHERE status = 'active' ORDER BY code LIMIT 1)::text AS quality_id,
+            (SELECT id FROM vendors WHERE status = 'active' ORDER BY code LIMIT 1)::text        AS vendor_id,
+            (SELECT id FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1)::text    AS job_worker_id,
+            f.location_id::text AS location_id,
+            f.id::text          AS floor_id
+       FROM location_floors f
+       JOIN locations l ON l.id = f.location_id AND l.status = 'active'
+      WHERE f.status = 'active'
+      ORDER BY l.code, f.name
+      LIMIT 1`,
+  );
+  expect(masters, 'seed must provide the masters').not.toBeNull();
+  if (masters === null) return;
+
+  await gotoAndExpect(page, '/inventory');
+  const csrf = await getCsrfToken(page);
+  const spot = {
+    locationId: masters.location_id,
+    floorId: masters.floor_id,
+    quantity: 30,
+    unit: 'KG',
+  };
+
+  const purchaseRes = await page.request.post(`${env.API_URL}/yarn-purchases`, {
+    headers: { 'X-CSRF-Token': csrf },
+    data: {
+      date: new Date().toISOString(),
+      vendorId: masters.vendor_id,
+      items: [
+        { qualityId: masters.quality_id, quantity: 30, unit: 'KG', placements: [spot] },
+      ],
+    },
+  });
+  expect(purchaseRes.status(), await purchaseRes.text()).toBe(201);
+  const purchase = (await purchaseRes.json()) as { id: string };
+  const purchasedLot = await db.queryOne<{ lot_number: string }>(
+    `SELECT lot_number FROM yarn_purchase_items WHERE purchase_id = $1 LIMIT 1`,
+    [purchase.id],
+  );
+  expect(purchasedLot, 'the purchase must mint a lot').not.toBeNull();
+  if (purchasedLot === null) return;
+
+  const outRes = await page.request.post(`${env.API_URL}/jw-challans-out`, {
+    headers: { 'X-CSRF-Token': csrf },
+    data: {
+      date: new Date().toISOString(),
+      jobWorkerId: masters.job_worker_id,
+      jobWorkTypes: ['twisting'],
+      items: [
+        {
+          qualityId: masters.quality_id,
+          sourceLotNumber: purchasedLot.lot_number,
+          netWeight: 30,
+          unit: 'KG',
+          placements: [spot],
+        },
+      ],
+    },
+  });
+  expect(outRes.status(), await outRes.text()).toBe(201);
+  const out = (await outRes.json()) as { items: { id: string }[] };
+  const outItemId = out.items[0]?.id;
+  expect(outItemId, 'the dispatch must carry an out-item').toBeTruthy();
+
+  // 30 issued, 30 consumed (wastage-inclusive) of which 2 is waste, so 28 back.
+  const inRes = await page.request.post(`${env.API_URL}/jw-challans-in`, {
+    headers: { 'X-CSRF-Token': csrf },
+    data: {
+      date: new Date().toISOString().slice(0, 10),
+      yarnItems: [
+        {
+          qualityId: masters.quality_id,
+          netWeight: 28,
+          unit: 'KG',
+          sources: [
+            {
+              jwChallanOutItemId: outItemId,
+              consumedQty: 30,
+              wastage: 2,
+              stillAtJwQty: 0,
+              completions: [{ jobWorkType: 'twisting', completed: true }],
+            },
+          ],
+          placements: [{ ...spot, quantity: 28 }],
+        },
+      ],
+    },
+  });
+  expect(inRes.status(), await inRes.text()).toBe(201);
+
   const chain = await db.queryOne<ChainRow>(
     `SELECT ypi.lot_number,
             oi.id::text                            AS out_item_id,
@@ -46,14 +154,13 @@ test('traces a purchase lot through job work and surfaces the per-hop invariant'
        JOIN jw_challan_in_yarn_item_source src ON src.jw_challan_out_item_id = oi.id
        JOIN jw_challan_in_yarn_item yi ON yi.id = src.yarn_item_id
        JOIN jw_challans_in ci ON ci.id = yi.challan_in_id AND ci.status <> 'cancelled'
+      WHERE ypi.lot_number = $1
       GROUP BY ypi.lot_number, oi.id, oi.net_weight
-      ORDER BY ypi.lot_number, oi.id
+      ORDER BY oi.id
       LIMIT 1`,
+    [purchasedLot.lot_number],
   );
-  expect(
-    chain,
-    'seed must contain at least one purchase lot dispatched and returned',
-  ).not.toBeNull();
+  expect(chain, 'the private chain must be dispatched and returned').not.toBeNull();
   if (chain === null) return; // narrow for TS; the expect above already failed
 
   await gotoAndExpect(page, `/inventory/trace?ref=${encodeURIComponent(chain.lot_number)}`);
