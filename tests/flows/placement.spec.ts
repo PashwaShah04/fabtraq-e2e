@@ -445,7 +445,15 @@ test(
     // Item is STILL in the queue (not fully placed yet).
     await gotoAndExpect(page, '/place-stock');
     await expect(page.getByRole('row', { name: item!.lot_number })).toBeVisible();
-    await expect(page.getByRole('row', { name: item!.lot_number })).toContainText('Partial');
+    // Exact label, not a prefix. The queue used to say "Partial" while the
+    // JW-Out challan said "Partially placed" for the same state; one shared
+    // vocabulary now says "Partially placed" everywhere (2026-08-31 spec §3.2).
+    // `toContainText('Partial')` survives that change without noticing it —
+    // it matches both wordings — so it would have kept passing while no longer
+    // asserting what it claims.
+    await expect(page.getByRole('row', { name: item!.lot_number })).toContainText(
+      'Partially placed',
+    );
 
     // Lots page now shows TWO rows for this lot number: the bucket remainder
     // and the floor position.
