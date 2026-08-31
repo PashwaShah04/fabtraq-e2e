@@ -32,9 +32,10 @@ import { gotoAndExpect } from '../../support/nav';
 //     UUID drill value are exercised live.
 //
 // Still unfalsifiable here, and annotated per run rather than passing silently:
-// every live beam is `received`, so the `issued_to_weaver` and
-// `fabric_received` status buckets are asserted at zero and a swap between
-// those two would not be caught.
+// every live beam is `received`, so `issued_to_weaver` and `fabric_received`
+// hold nothing. Since `StackedBar` drops zero-value segments, they are asserted
+// ABSENT from the bar and PRESENT in the legend — a swap between those two
+// empty buckets would still not be caught.
 //
 // Not touched, deliberately: `mockBeamsGrouped`'s empty `colourway.beams[]`
 // arrays diverge from the live endpoint's populated ones (Task 13). Nothing
@@ -76,6 +77,26 @@ const num = (n: number): string => n.toLocaleString('en-US');
 // (`colourway.colourwayId ?? NO_DESIGN`), so the oracle does too — a distinct
 // NO_COLOURWAY token here would key differently from the code under test.
 const NO_DESIGN = 'no-design';
+
+/**
+ * The beam pipeline stages, in `beam-drill.ts`'s `STATUS_SEGMENTS` order. Order
+ * matters here: these are ordinal stages sharing one lightness ramp, so a
+ * reordering changes what the chart says and the legend must keep declaring
+ * all three regardless of counts.
+ */
+const STATUS_KEYS = ['received', 'issued_to_weaver', 'fabric_received'] as const;
+
+/**
+ * `StackedBar` renders only `value > 0` segments. Which stages a colour-way
+ * actually holds is therefore the DOM's segment count — derived from the DB
+ * row, never hard-coded, so the assertion tracks the seed instead of pinning a
+ * literal that a seed change silently invalidates.
+ */
+const presentStatuses = (c: GroupRow): readonly string[] =>
+  STATUS_KEYS.filter((k) => Number(c[k]) > 0);
+
+const absentStatuses = (c: GroupRow): readonly string[] =>
+  STATUS_KEYS.filter((k) => Number(c[k]) === 0);
 
 const GROUP_ROLLUPS = `
   SELECT COALESCE(bri.design_id::text, '${NO_DESIGN}') AS design_key,
@@ -255,17 +276,29 @@ test('drilling a design opens its colour-ways, and the status level is terminal'
   await expect(crumb.last()).toContainText(colourwayLabel(colourway));
 
   // Status is the LEAF: segments render as <span>, not <button>, so there is
-  // nothing further to click. All three are asserted by count, never by
-  // visibility — an all-`received` seed leaves two of them at width 0%, and a
-  // zero-width flex child has no bounding box for Playwright to see.
+  // nothing further to click.
   //
-  // Their VALUES belong to the next test, which reaches this level by URL: the
-  // colour-way bar above filters its segments to `value > 0`
-  // (beam-drill.ts:106), so a wrong `statusCounts` pick empties that bar and
-  // severs the click here — the failure would read as a missing locator, and
-  // no value assertion would ever fire.
+  // `StackedBar` drops zero-value segments outright (it gives every surviving
+  // segment `min-w-[2px]`, so a zero would otherwise draw a tick claiming beams
+  // that do not exist). The count is therefore the number of statuses this
+  // colour-way actually holds — read from the DB, never hard-coded — and the
+  // empty ones are asserted ABSENT. Asserting a flat 3 encoded the old
+  // render-all-then-zero-width behaviour and would now be red for the right
+  // reason; asserting only the survivors would let a vanished segment pass.
+  //
+  // Identity does not go missing with them: the legend names all three stages
+  // whatever the counts are, which is the whole reason it exists.
   await expect(panel.locator('button[data-chart-segment]')).toHaveCount(0);
-  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3);
+  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(
+    presentStatuses(colourway).length,
+  );
+  for (const key of absentStatuses(colourway)) {
+    await expect(
+      panel.locator(`span[data-chart-segment="${colourway.colourway_key}:${key}"]`),
+      `${key} holds no beams and must not draw a segment`,
+    ).toHaveCount(0);
+  }
+  await expect(panel.locator('[data-chart-legend] li')).toHaveCount(STATUS_KEYS.length);
 
   // Back to the top clears the whole drill.
   await panel.locator('[data-drill-crumb="0"]').click();
@@ -314,13 +347,31 @@ test('the terminal status level splits the colour-way by beam status', async ({ 
 
   const panel = page.getByRole('tabpanel');
   await expect(panel.locator('button[data-chart-segment]')).toHaveCount(0);
-  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3);
+  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(
+    presentStatuses(colourway).length,
+  );
 
+  // A zero-count status draws no segment (StackedBar drops them), so its title
+  // cannot be asserted — assert its ABSENCE instead. The non-zero ones still
+  // carry their value in the title, which is what falsifies a wrong
+  // `statusCounts` pick.
   for (const [key, label, count] of statuses) {
-    await expect(
-      panel.locator(`span[data-chart-segment="${colourway.colourway_key}:${key}"]`),
-      `${label} count`,
-    ).toHaveAttribute('title', `${label}: ${num(count)} beams`);
+    const segment = panel.locator(`span[data-chart-segment="${colourway.colourway_key}:${key}"]`);
+    if (count === 0) {
+      await expect(segment, `${label} is empty and must draw nothing`).toHaveCount(0);
+      continue;
+    }
+    await expect(segment, `${label} count`).toHaveAttribute(
+      'title',
+      `${label}: ${num(count)} beams`,
+    );
+  }
+
+  // Every stage keeps a legend entry whether or not it holds beams — a reader
+  // must be able to tell "no beams issued to a weaver" from "this chart does
+  // not track that stage".
+  for (const [, label] of statuses) {
+    await expect(panel.locator('[data-chart-legend]')).toContainText(label);
   }
 });
 

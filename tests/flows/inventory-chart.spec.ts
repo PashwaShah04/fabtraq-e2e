@@ -86,6 +86,27 @@ function maxBy<T>(values: readonly T[], score: (value: T) => number): T {
   return values.reduce((a, b) => (score(b) > score(a) ? b : a));
 }
 
+/**
+ * The three custody buckets, in `yarn-drill.ts`'s `CUSTODY_BUCKETS` order.
+ *
+ * Every level ABOVE custody now previews this split rather than drawing one
+ * flat self-keyed slab, so a bar's segments are custody keys — `raw:in_house`,
+ * not `raw:raw` — at the processedType level as well as at the terminal one.
+ */
+const CUSTODY = [
+  ['in_house', 'In-house', (r: SummaryRow) => r.inHouseBalance],
+  ['at_jw', 'At JW', (r: SummaryRow) => r.atJobWorkerBalance],
+  ['unplaced', 'Unplaced', (r: SummaryRow) => r.awaitingPlacementBalance],
+] as const;
+
+/**
+ * `StackedBar` drops zero-value segments (each survivor gets `min-w-[2px]`, so
+ * a zero would draw a tick claiming stock that is not there). Which buckets a
+ * row set draws is therefore derived from the rows, never hard-coded at three.
+ */
+const presentCustody = (rows: readonly SummaryRow[]): readonly (typeof CUSTODY)[number][] =>
+  CUSTODY.filter(([, , pick]) => sumOf(rows, pick) > 0);
+
 function sumOf(rows: readonly SummaryRow[], pick: (row: SummaryRow) => number): number {
   return rows.reduce((total, row) => total + pick(row), 0);
 }
@@ -181,7 +202,17 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   }
 
   // ---- Level 2 → 3: processed type --------------------------------------
-  await unitChart.locator(`[data-chart-segment="${leafKey}:${leafKey}"]`).click();
+  // The processedType bar previews the custody split, so its segments key on
+  // custody buckets rather than repeating the bar's own key. Any segment of
+  // the bar drills the same way — `onSegmentActivate` pushes the ROW key, not
+  // the segment's — so the target is the widest bucket this leaf actually
+  // holds. Picking a bucket that happens to be empty would look exactly like
+  // the segment having vanished.
+  const leafUnitRows = leafRows.filter((r) => r.unit === target.unit);
+  const drillBucket = presentCustody(leafUnitRows)[0];
+  expect(drillBucket, 'the leaf must hold stock in at least one custody bucket').toBeDefined();
+  if (drillBucket === undefined) return;
+  await unitChart.locator(`[data-chart-segment="${leafKey}:${drillBucket[0]}"]`).click();
   // A multi-type key is comma-joined, and both URLSearchParams and
   // encodeURIComponent spell that `%2C` — the two agree for the [a-z,]
   // alphabet JobWorkType uses.
@@ -202,31 +233,43 @@ test('drills quality → SKU → processed type → custody, keeping the table i
   // ---- Level 3: custody is TERMINAL -------------------------------------
   // Segments render as <span> rather than <button> when no `onSegmentActivate`
   // is passed (StackedBar), which is how "drilling further would empty the
-  // table" is enforced. Counted, never asserted visible: an all-in-house
-  // position leaves two of the three at width 0%, and a zero-width flex child
-  // has no bounding box for Playwright to see.
+  // table" is enforced.
   await expect(panel.locator('button[data-chart-segment]')).toHaveCount(0);
 
   // ONE custody bar PER UNIT (I1): the custody split sums three balance fields,
   // and summing them across units would add kilograms to metres. The unit set
-  // is READ from the leaf rather than assumed single — a KG-only leaf gives 3
-  // segments, a mixed one gives 3 per unit, and each is asserted inside its own
-  // `[data-chart-unit]` chart with the sum of THAT unit's rows only.
+  // is READ from the leaf rather than assumed single, and so is the bucket
+  // count — `StackedBar` draws only non-empty buckets, so an all-in-house
+  // position gives ONE segment per unit, not three. Each bucket is then
+  // asserted inside its own `[data-chart-unit]` chart against the sum of THAT
+  // unit's rows: present ones by title, empty ones by absence, so neither a
+  // vanished segment nor a phantom one can pass.
   const leafUnits = [...new Set(leafRows.map((r) => r.unit))];
-  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(3 * leafUnits.length);
+  const expectedSegments = leafUnits.reduce(
+    (n, unit) => n + presentCustody(leafRows.filter((r) => r.unit === unit)).length,
+    0,
+  );
+  await expect(panel.locator('span[data-chart-segment]')).toHaveCount(expectedSegments);
 
-  const custody = [
-    ['in_house', 'In-house', (r: SummaryRow) => r.inHouseBalance],
-    ['at_jw', 'At JW', (r: SummaryRow) => r.atJobWorkerBalance],
-    ['unplaced', 'Unplaced', (r: SummaryRow) => r.awaitingPlacementBalance],
-  ] as const;
   for (const unit of leafUnits) {
     const unitLeafRows = leafRows.filter((r) => r.unit === unit);
-    for (const [key, label, pick] of custody) {
-      await expect(
-        panel.locator(`[data-chart-unit="${unit}"] span[data-chart-segment="custody:${key}"]`),
-      ).toHaveAttribute('title', `${label}: ${num(sumOf(unitLeafRows, pick))} ${unit}`);
+    for (const [key, label, pick] of CUSTODY) {
+      const total = sumOf(unitLeafRows, pick);
+      const segment = panel.locator(
+        `[data-chart-unit="${unit}"] span[data-chart-segment="custody:${key}"]`,
+      );
+      if (total === 0) {
+        await expect(segment, `${label} is empty in ${unit} and must draw nothing`).toHaveCount(0);
+        continue;
+      }
+      await expect(segment).toHaveAttribute('title', `${label}: ${num(total)} ${unit}`);
     }
+  }
+
+  // Identity survives the dropped segments: the legend names all three buckets
+  // whatever the balances are.
+  for (const [, label] of CUSTODY) {
+    await expect(panel.locator('[data-chart-legend]').first()).toContainText(label);
   }
   if (leafUnits.length === 1) {
     test.info().annotations.push({
