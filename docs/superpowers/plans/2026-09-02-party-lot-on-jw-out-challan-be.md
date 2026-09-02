@@ -91,6 +91,13 @@ The BE-specific gate item CLAUDE.md does *not* list, and the one this change tri
 
 ---
 
+> **Execution amendment (2026-09-02, `session-1788324721003`):** Task 1's Step 10
+> expectation ("integration passes unchanged") was wrong. With NO default on
+> `partyLotMap` (spec §3.2, kept), every 3-argument service call throws at the
+> mapper until Task 2 wires it, and 125 integration tests 500. Tasks 1 and 2
+> therefore land as ONE commit with ONE gate run after both. The written steps
+> below are otherwise executed as-is.
+
 ### Task 1: Mapper — required 4th parameter, wired against the 1.28.0 tarball
 
 **Files:**
