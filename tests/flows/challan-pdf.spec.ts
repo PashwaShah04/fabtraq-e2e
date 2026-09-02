@@ -46,7 +46,8 @@ test(
     const Q = 8;
 
     const jobWorker = await createJobWorker(page, db);
-    const sentinel = await createSentinelPurchase(page, db, Q);
+    const partyLot = codes.unique('PL');
+    const sentinel = await createSentinelPurchase(page, db, Q, { partyLotNo: partyLot });
     const quality = await db.queryOne<{ code: string; name: string }>(
       `SELECT code, name FROM yarn_qualities WHERE id = $1`,
       [sentinel.qualityId],

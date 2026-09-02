@@ -14,6 +14,19 @@ export interface SentinelPurchaseResult {
   readonly purchaseId: string;
   /** null for the sentinel ("No shade / greige") path; a real SKU id otherwise. */
   readonly skuId: string | null;
+  /**
+   * The vendor's own lot number, typed into "Party lot number for line 1" on
+   * the purchase form — the ONLY place it is ever entered (party lot is
+   * derived/read-only everywhere downstream, 2026-08-20 carry-forward spec L2).
+   * `null` when the caller did not ask for one, which is every pre-existing
+   * caller: the minted lot then carries `party_lot_no = NULL`.
+   */
+  readonly partyLotNo: string | null;
+}
+
+/** Optional extras for a driven purchase. Omitted by every pre-existing caller. */
+export interface SentinelPurchaseOptions {
+  readonly partyLotNo?: string;
 }
 
 /**
@@ -31,6 +44,7 @@ async function createPurchase(
   db: Db,
   quantity: number,
   sku: 'sentinel' | 'real',
+  options: SentinelPurchaseOptions = {},
 ): Promise<SentinelPurchaseResult> {
   const vendor = await db.queryOne<{ id: string; code: string; name: string }>(
     `SELECT id, code, name FROM vendors WHERE status = 'active' ORDER BY code LIMIT 1`,
@@ -75,6 +89,13 @@ async function createPurchase(
   await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
   await selectByAriaLabel(page, 'Select SKU', skuOptionLabel);
   await fillByLabel(page, 'Quantity for line 1', String(quantity));
+  // Party Lot No (PurchaseLineItemRow.tsx aria-label "Party lot number for
+  // line N"). Left untouched when the caller asks for none, so the minted lot
+  // keeps `party_lot_no = NULL` and every pre-existing caller's fixture is
+  // byte-for-byte what it was.
+  if (options.partyLotNo !== undefined) {
+    await fillByLabel(page, 'Party lot number for line 1', options.partyLotNo);
+  }
   await clickButton(page, 'Add placement');
   await selectByAriaLabel(page, 'Select location', `${location!.code} – ${location!.name}`);
   await selectByAriaLabel(page, 'Select floor', floor!.name);
@@ -104,6 +125,7 @@ async function createPurchase(
     lotNumber: row!.lot_number!,
     purchaseId,
     skuId: row!.sku_id,
+    partyLotNo: options.partyLotNo ?? null,
   };
 }
 
@@ -112,8 +134,9 @@ export async function createSentinelPurchase(
   page: Page,
   db: Db,
   quantity: number,
+  options: SentinelPurchaseOptions = {},
 ): Promise<SentinelPurchaseResult> {
-  return createPurchase(page, db, quantity, 'sentinel');
+  return createPurchase(page, db, quantity, 'sentinel', options);
 }
 
 /**
@@ -126,6 +149,7 @@ export async function createSkuPurchase(
   page: Page,
   db: Db,
   quantity: number,
+  options: SentinelPurchaseOptions = {},
 ): Promise<SentinelPurchaseResult> {
-  return createPurchase(page, db, quantity, 'real');
+  return createPurchase(page, db, quantity, 'real', options);
 }
