@@ -1,4 +1,5 @@
 import { test, expect } from '../../fixtures/test';
+import { env } from '../../fixtures/env';
 import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel, fillByLabelExact,
@@ -412,6 +413,33 @@ test(
       floor_id: receivingFloor!.floor_id,
     };
     const outMerged = await openJwPosition(page, jobWorker!, mergedSrc, 'Dyeing', Q * 2);
+
+    // L3 (spec 2026-09-02-party-lot-on-jw-out-challan-design) — a merged lot's
+    // combined party-lot string reaches the JW-Out response VERBATIM: the BE
+    // resolves it in a single hop from jw_challan_in_yarn_item.party_lot_no
+    // (2026-08-20 L10, denormalized per generation), never re-deriving or
+    // re-joining it. Asserted here rather than in jw-out.spec because this
+    // spec already owns the two-purchase → merged-receipt round trip that
+    // produces a combined value; jw-out.spec keeps a 2-lot fixture.
+    //
+    // openJwPosition returns the minted challan NUMBER (format-only per I6);
+    // the id comes from the row, not from an assertion on that number.
+    const outMergedRow = await db.queryOne<{ id: string }>(
+      `SELECT id FROM jw_challans_out WHERE challan_no = $1`,
+      [outMerged],
+    );
+    expect(outMergedRow, 'the merged-lot JW-Out must resolve to a jw_challans_out row').not.toBeNull();
+    const outWire = await page.request.get(`${env.API_URL}/jw-challans-out/${outMergedRow!.id}`);
+    expect(outWire.ok()).toBe(true);
+    const outBody = (await outWire.json()) as {
+      items: { sourceLotNumber: string; partyLotNo: string | null }[];
+    };
+    const mergedItem = outBody.items.find((item) => item.sourceLotNumber === item1!.lot_no);
+    expect(mergedItem, 'the JW-Out must carry an item for the merged lot').toBeDefined();
+    expect(
+      mergedItem!.partyLotNo,
+      'the combined party-lot string must print verbatim, joined exactly once',
+    ).toBe(combined);
     const outARemainder = await openJwPosition(page, jobWorker!, srcA, 'Dyeing', Q);
 
     const in3Id = await receiveMergedLot(
