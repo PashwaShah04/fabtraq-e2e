@@ -46,7 +46,8 @@ test(
     const Q = 8;
 
     const jobWorker = await createJobWorker(page, db);
-    const sentinel = await createSentinelPurchase(page, db, Q);
+    const partyLot = codes.unique('PL');
+    const sentinel = await createSentinelPurchase(page, db, Q, { partyLotNo: partyLot });
     const quality = await db.queryOne<{ code: string; name: string }>(
       `SELECT code, name FROM yarn_qualities WHERE id = $1`,
       [sentinel.qualityId],
@@ -93,7 +94,7 @@ test(
     expect(wireRes.ok()).toBe(true);
     const wireBody = (await wireRes.json()) as {
       jobWorker: { stateName: string | null; stateCode: string | null };
-      items: { qualityName: string }[];
+      items: { qualityName: string; sourceLotNumber: string; partyLotNo: string | null }[];
     };
     expect(wireBody.jobWorker.stateName, 'jobWorker.stateName must be hydrated on the response').toBeTruthy();
     expect(wireBody.jobWorker.stateCode, 'jobWorker.stateCode must be hydrated on the response').toBeTruthy();
@@ -104,6 +105,19 @@ test(
       expect(item.qualityName, 'qualityName must be a name, not a raw UUID').not.toMatch(uuidPattern);
     }
 
+    // The party lot the purchase form was given, resolved at READ time by the
+    // BE from `yarn_purchase_item.party_lot_no` via
+    // IInventoryService.findPartyLotsByLotNumbers (spec L4) and printed in the
+    // challan's "Lot No." column instead of the minted lot (L1). Asserting the
+    // exact typed string — not merely "not null" — is what catches a map keyed
+    // on the item id instead of the lot number: with one item, a wrongly keyed
+    // map yields null, and a right-keyed one yields exactly this value.
+    expect(wireBody.items[0]!.sourceLotNumber).toBe(sentinel.lotNumber);
+    expect(
+      wireBody.items[0]!.partyLotNo,
+      'items[].partyLotNo must carry the party lot typed on the purchase form',
+    ).toBe(partyLot);
+
     // UI counterpart of the same gap: the Quality column must render the same name string the
     // wire carried (jw-challan-out-detail.page.tsx renders `item.qualityName` directly), not a
     // raw id — this is the live defect the design doc's §5 gap 2 called out ("detail page prints
@@ -111,6 +125,21 @@ test(
     const qualityCell = page.getByRole('cell', { name: wireBody.items[0]!.qualityName, exact: false });
     await expect(qualityCell.first()).toBeVisible();
     await expect(qualityCell.first()).not.toHaveText(uuidPattern);
+
+    // L6 — the detail page shows BOTH identities in ONE cell: the party lot on
+    // top, the minted lot beneath in muted text
+    // (jw-challan-out-detail.page.tsx:316). Located by the minted lot rather
+    // than by the column header (the header there reads "Source Lot", :291,
+    // not "Lot No") and asserted on the CELL, not the row: bags/cones/gross all
+    // render '—' in the same row, so a row-level assertion would be satisfied
+    // by the wrong element.
+    const lotCell = page
+      .getByRole('row', { name: sentinel.lotNumber })
+      .getByRole('cell')
+      .filter({ hasText: sentinel.lotNumber });
+    await expect(lotCell).toHaveCount(1);
+    await expect(lotCell).toContainText(partyLot);
+    await expect(lotCell).toContainText(sentinel.lotNumber);
 
     // 3) Click "Print PDF" and assert both that a real popup/tab opens (`context.
     // waitForEvent('page')`) AND capture the exact blob: URL `window.open` was called with.

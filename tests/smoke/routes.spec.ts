@@ -26,6 +26,12 @@ const ROUTES = [
   '/beams',
   '/inventory',
   '/inventory/lots',
+  // Hand-seeded raw lot, not a query result: support/lots.ts:26-27 names it by
+  // literal ("the seed's S2/S3 chains hand-write exactly those ... of
+  // LOT-260324-0001") as one of the fixed floor legs `db:seed` always writes,
+  // independent of RAW_FLOOR_LOT_SQL's own runtime query/tiebreak.
+  '/inventory/lots/LOT-260324-0001',
+  '/inventory/trace',
   '/inventory/positions',
   '/place-stock',
   '/stock-transfers',
@@ -34,6 +40,7 @@ const ROUTES = [
   '/fabric-designs',
   '/weaving-ins',
   '/fabric-takas',
+  '/reports/wastage',
 ] as const;
 
 for (const route of ROUTES) {

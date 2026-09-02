@@ -35,7 +35,7 @@ import { expectToast } from '../../support/assert';
 //    the unplaced remainder at the "bucket" position
 //    (locationId=NULL, floorId=NULL, jobWorkerId=NULL), transactionType
 //    unchanged ('purchase' / 'challan_in'). This is what makes pending stock
-//    show up as an "Awaiting placement" row in Stock Balance / Lots
+//    show up as an "Awaiting placement" row in Inventory / Lots
 //    immediately after create, before anyone visits /place-stock.
 //
 // 2. Queue placement (design §3.2, the actual bug fix) — `PlaceStockService.
@@ -376,7 +376,7 @@ test(
     expect(await db.ledgerBalance(floorKey)).toBeCloseTo(0, 3);
     expect(await db.ledgerBalance(floor2Key)).toBeCloseTo(0, 3);
 
-    // ── Step 2: Stock Balance OVERVIEW (B-015 redesign) — this page now
+    // ── Step 2: Inventory OVERVIEW (B-015 redesign) — this page now
     // shows one row per (quality, sku, processedTypes, unit) with a Custody
     // split column, not a per-position "Awaiting placement" row; it also has
     // no SKU filter any more (D3), so filter by quality only. The "Unplaced"
@@ -445,7 +445,15 @@ test(
     // Item is STILL in the queue (not fully placed yet).
     await gotoAndExpect(page, '/place-stock');
     await expect(page.getByRole('row', { name: item!.lot_number })).toBeVisible();
-    await expect(page.getByRole('row', { name: item!.lot_number })).toContainText('Partial');
+    // Exact label, not a prefix. The queue used to say "Partial" while the
+    // JW-Out challan said "Partially placed" for the same state; one shared
+    // vocabulary now says "Partially placed" everywhere (2026-08-31 spec §3.2).
+    // `toContainText('Partial')` survives that change without noticing it —
+    // it matches both wordings — so it would have kept passing while no longer
+    // asserting what it claims.
+    await expect(page.getByRole('row', { name: item!.lot_number })).toContainText(
+      'Partially placed',
+    );
 
     // Lots page now shows TWO rows for this lot number: the bucket remainder
     // and the floor position.

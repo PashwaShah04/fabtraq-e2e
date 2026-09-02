@@ -10,6 +10,7 @@ import {
   clickButton,
 } from '../../support/forms';
 import { getCsrfToken } from '../../support/api';
+import { RAW_FLOOR_LOT_SQL } from '../../support/lots';
 import { expectToast, captureDocNo } from '../../support/assert';
 
 // B-035/B-036 (docs/brainstorms/2026-08-26-out-item-conservation.md) — a
@@ -43,26 +44,6 @@ interface SourceLotRow {
   floor_id: string;
 }
 
-const RAW_LOT_SQL = `SELECT s.lot_number, s.sku_id, s.quality_id,
-        q.code AS quality_code, q.name AS quality_name,
-        sku.name AS sku_name, sku.shade_number AS sku_shade_number,
-        l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
- FROM stock_ledger s
- JOIN location_floors f ON f.id = s.floor_id
- JOIN locations l ON l.id = f.location_id
- JOIN yarn_qualities q ON q.id = s.quality_id
- JOIN yarn_skus sku ON sku.id = s.sku_id
- WHERE s.lot_number IS NOT NULL
-   AND s.sku_id IS NOT NULL
-   AND s.job_worker_id IS NULL
-   AND l.status = 'active' AND f.status = 'active'
-   AND q.status = 'active' AND sku.status = 'active'
-   AND cardinality(s.processed_types) = 0
- GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
-          sku.name, sku.shade_number, l.name, f.name, f.id
- HAVING SUM(s.in_quantity - s.out_quantity) >= $1
- ORDER BY s.lot_number
- LIMIT 1`;
 
 function skuLabelOf(src: SourceLotRow): string {
   return src.sku_shade_number !== null && src.sku_shade_number !== ''
@@ -94,7 +75,7 @@ async function seedSizingOutChallan(
   );
   expect(jobWorker, 'seed must provide an active job worker').not.toBeNull();
 
-  const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [qty]);
+  const src = await db.queryOne<SourceLotRow>(RAW_FLOOR_LOT_SQL, [qty]);
   expect(src, 'seed must provide a raw lot with >= qty balance').not.toBeNull();
 
   const receivingFloor = await db.queryOne<{

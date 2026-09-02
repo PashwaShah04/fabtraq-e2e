@@ -6,6 +6,7 @@ import { codes } from '../../fixtures/codes';
 import { gotoAndExpect } from '../../support/nav';
 import { fillByLabel, fillByLabelExact, selectByAriaLabel, selectByLabel, clickButton } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
+import { RAW_LOT_ORDER } from '../../support/lots';
 
 // Beam Register (`/beams`) is READ-ONLY — list + detail, no create/edit. Beams are
 // registered as a side effect of the beam-receipt flow (see beam-receipt.spec.ts,
@@ -126,7 +127,15 @@ test('beam register lists a received beam and its detail renders', async ({ page
 
   // DETAIL — the whole row is clickable (spec 2026-07-30); the per-row View
   // link/button was removed — DataTable's onRowClick is the only affordance.
-  await row.getByText(seededBeam!.beam_number, { exact: true }).click();
+  //
+  // Click a NON-number cell. The beam-number cell is a trace link as of the
+  // Inventory Rewoven Phase 1 work (design spec §5.1: every lot/beam/taka
+  // number in Lots / Beam Register / Fabric Takas becomes a link to
+  // `/inventory/trace?ref=`, cell-level, with stopPropagation where rows
+  // navigate). Both affordances are intended and coexist — number to trace,
+  // rest of the row to detail — so this assertion has to target the row, not
+  // the number, or it silently tests the link instead of onRowClick.
+  await (await cellInColumn(page, row, 'Origin')).click();
   await expect(page).toHaveURL(new RegExp(`/beams/${seededBeam!.id}$`));
 
   // Detail page renders the beam's key fields (beam-detail.page.tsx): heading
@@ -185,7 +194,9 @@ test('a sizing_jw beam with no resolvable OUT item shows "—" for Sourced From'
   await expect(row).toBeVisible();
   await expect(await cellInColumn(page, row, 'Sourced From')).toHaveText('—');
 
-  await row.getByText(beam!.beam_number, { exact: true }).click();
+  // Non-number cell again — the number cell is a trace link (see the note on
+  // the first detail assertion above).
+  await (await cellInColumn(page, row, 'Sourced From')).click();
   await expect(page).toHaveURL(new RegExp(`/beams/${beam!.id}$`));
   const provenanceSection = page.locator('section').filter({ hasText: 'Provenance' });
   const sourcedFromStat = provenanceSection.locator('div').filter({ hasText: 'Sourced From' }).last();
@@ -254,15 +265,12 @@ test('a beam receipt with beams sourced from two different job workers shows the
      JOIN yarn_skus sku ON sku.id = s.sku_id
      WHERE s.lot_number IS NOT NULL
        AND s.sku_id IS NOT NULL
-       AND s.job_worker_id IS NULL
        AND l.status = 'active' AND f.status = 'active'
        AND q.status = 'active' AND sku.status = 'active'
        AND cardinality(s.processed_types) = 0
      GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
               sku.name, sku.shade_number, l.id, l.name, f.name, f.id
-     HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-     ORDER BY s.lot_number
-     LIMIT 1`,
+     HAVING SUM(s.in_quantity - s.out_quantity) >= $1${RAW_LOT_ORDER}`,
     [Q_WARP],
   );
   expect(src, 'seed must provide a raw lot with >= Q_WARP balance').not.toBeNull();
@@ -426,4 +434,31 @@ test('a beam receipt with beams sourced from two different job workers shows the
   // Non-tautological: a header-level bug (one resolved name applied to every
   // item) would make these equal.
   expect(jobWorkerA!.name).not.toBe(jobWorkerB!.name);
+});
+
+// The beam-number cell is a TRACE link, not a detail link (Inventory Rewoven
+// design spec §5.1: every lot/beam/taka number in the Lots page, Beam Register
+// and Fabric Takas register becomes a `<Link to="/inventory/trace?ref=…">`,
+// cell-level, with stopPropagation where the row itself navigates).
+//
+// This is the lockstep partner of the two detail assertions above, which now
+// click a non-number cell. Without this test, changing the number cell back to
+// a detail link would break no e2e assertion — the branch has already shipped
+// one semantic merge conflict here that git reported no textual conflict for.
+test('the beam-number cell links to trace, while the rest of the row opens the detail page', async ({
+  page,
+  db,
+}) => {
+  const beam = await db.queryOne<{ beam_number: string }>(
+    `SELECT beam_number FROM beams WHERE status <> 'cancelled' ORDER BY created_at ASC LIMIT 1`,
+  );
+  expect(beam, 'seed must provide at least one non-cancelled beam').not.toBeNull();
+
+  await gotoAndExpect(page, '/beams');
+  await page.getByRole('textbox', { name: 'Search beams' }).fill(beam!.beam_number);
+  const row = page.getByRole('row', { name: beam!.beam_number });
+  await expect(row).toBeVisible();
+
+  await row.getByRole('link', { name: beam!.beam_number, exact: true }).click();
+  await expect(page).toHaveURL(`/inventory/trace?ref=${encodeURIComponent(beam!.beam_number)}`);
 });

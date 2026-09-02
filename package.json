@@ -5,7 +5,7 @@
   "type": "module",
   "engines": { "node": ">=22" },
   "scripts": {
-    "e2e": "npm --prefix ${E2E_BE_DIR:-../fabtraq-be} run db:reset && npm --prefix ${E2E_BE_DIR:-../fabtraq-be} run db:seed && playwright test",
+    "e2e": "node scripts/test-lock.mjs -- bash -c \"npm --prefix ${E2E_BE_DIR:-../fabtraq-be} run db:reset && npm --prefix ${E2E_BE_DIR:-../fabtraq-be} run db:seed && playwright test\"",
     "e2e:ui": "playwright test --ui",
     "e2e:report": "playwright show-report",
     "typecheck": "tsc --noEmit"

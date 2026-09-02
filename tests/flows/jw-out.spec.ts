@@ -1,4 +1,8 @@
+import type { Locator, Page } from '@playwright/test';
+
 import { test, expect } from '../../fixtures/test';
+import { codes } from '../../fixtures/codes';
+import { env } from '../../fixtures/env';
 import { gotoAndExpect } from '../../support/nav';
 import {
   fillByLabel, fillByLabelExact,
@@ -8,6 +12,7 @@ import {
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 import { createSentinelPurchase, createSkuPurchase } from '../../support/sentinel-purchase';
+import { RAW_FLOOR_LOT_SQL } from '../../support/lots';
 
 // JW Challan Out moves stock OUT of a floor position and INTO an at-job-worker
 // position (jw-challan-out.service.ts `applyChallanOutLedger` writes two ledger
@@ -35,17 +40,13 @@ test(
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
     // Derive the source position from the ledger exactly the way
-    // SourceLotPicker + AvailableFloorSelect will render it:
-    //  - jobWorkerId IS NULL + floorId/locationId NOT NULL: a floor position, not an
-    //    at-JW position (SourceLotPicker's underlying `listAggregatedLots` rolls up
-    //    per-floor balances into `placements[]`; only floor rows can appear there).
-    //  - cardinality(processed_types) = 0: a raw/unprocessed lot. `isValidInputState`
-    //    (fabtraq-shared primitives/job-work.ts) requires `!P.has('twisting') &&
-    //    !hasAny(['warping','sizing','weaving'])` for the 'twisting' operation — a raw
-    //    lot always satisfies this, so picking 'twisting' as the challan's operation
-    //    is guaranteed valid input for whatever raw lot we find here.
-    //  - status = 'active' on location/floor/quality/sku: mirrors the active-only
-    //    filters the FE's own master-data selects apply.
+    // SourceLotPicker + AvailableFloorSelect will render it — shared query, so
+    // the floor-balance contract and the ORDER BY tiebreak are defined once.
+    // Its `cardinality(processed_types) = 0` filter is what makes 'twisting'
+    // guaranteed-valid input here: `isValidInputState` (fabtraq-shared
+    // primitives/job-work.ts) requires `!P.has('twisting') &&
+    // !hasAny(['warping','sizing','weaving'])`, which a raw lot always
+    // satisfies. See support/lots.ts.
     const src = await db.queryOne<{
       lot_number: string;
       sku_id: string;
@@ -57,26 +58,7 @@ test(
       floor_name: string;
       floor_id: string;
     }>(
-      `SELECT s.lot_number, s.sku_id, s.quality_id,
-              q.code AS quality_code, q.name AS quality_name,
-              sku.name AS sku_name, sku.shade_number AS sku_shade_number,
-              l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
-       FROM stock_ledger s
-       JOIN location_floors f ON f.id = s.floor_id
-       JOIN locations l ON l.id = f.location_id
-       JOIN yarn_qualities q ON q.id = s.quality_id
-       JOIN yarn_skus sku ON sku.id = s.sku_id
-       WHERE s.lot_number IS NOT NULL
-         AND s.sku_id IS NOT NULL
-         AND s.job_worker_id IS NULL
-         AND l.status = 'active' AND f.status = 'active'
-         AND q.status = 'active' AND sku.status = 'active'
-         AND cardinality(s.processed_types) = 0
-       GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
-                sku.name, sku.shade_number, l.name, f.name, f.id
-       HAVING SUM(s.in_quantity - s.out_quantity) >= $1
-       ORDER BY s.lot_number
-       LIMIT 1`,
+      RAW_FLOOR_LOT_SQL,
       [Q],
     );
     expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
@@ -361,5 +343,158 @@ test(
     await expectToast(page, /^Saved /);
     await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
     expect(await countChallans()).toBe(before + 1);
+  },
+);
+
+// ── Party lot on the JW-Out response and detail page ────────────────────────
+// Spec docs/superpowers/specs/2026-09-02-party-lot-on-jw-out-challan-design.md
+// L1/L2/L5/L6. Two line items in ONE challan so the present case and the
+// absent case are proven against the same response object: a mapper that
+// resolves the map but keys it wrongly (item id instead of lot number) makes
+// BOTH items null, and a mapper that falls back to the minted lot makes
+// neither null — one line item could not tell those apart.
+//
+// FIXTURE OWNERSHIP: two dedicated sentinel purchases, minted through the real
+// purchase form. No "first active"/"first sufficient" lot anywhere, so this
+// test cannot race or be starved by a sibling spec. The job worker is the
+// seed's first active one, matching the other two tests in this file — it is
+// read only and holds no balance this test asserts on.
+//
+// This test asserts identity, not ledger movement; the -Q ledger delta is the
+// first test's job (:125-130) and is deliberately not duplicated here.
+
+/** The `<tr>` of line item `n` on /jw-challans-out/new. */
+function lineRow(page: Page, n: number): Locator {
+  return page.locator('tr').filter({ has: page.locator(`[aria-label="Quality for line ${n}"]`) });
+}
+
+/**
+ * Placement controls are indexed WITHIN each line item's own
+ * PlacementFieldArray (ChallanOutLineItemRow.tsx:298-303 renders one per row;
+ * PlacementFieldArray.tsx:263,:337 labels them "placement quantity 1" /
+ * "Add placement" regardless of which line they belong to). With two lines on
+ * screen the page-wide support helpers resolve two elements each and die on
+ * strict mode, so this file scopes them to the line's row. The option list
+ * itself is portal-rendered at page level, hence the page-level option lookup
+ * plus the unmount barrier copied from support/forms.ts:25-30 (Radix popovers
+ * stay mounted ~180 ms after close).
+ */
+async function placeWholeLine(
+  page: Page,
+  n: number,
+  floorOptionLabel: string,
+  q: number,
+): Promise<void> {
+  const row = lineRow(page, n);
+  await row.getByRole('button', { name: 'Add placement' }).click();
+  await row.locator('[aria-label="Select floor and location"]').click();
+  const option = page.getByRole('option', { name: floorOptionLabel });
+  await option.click();
+  await expect(option).toBeHidden();
+  await row.getByLabel('placement quantity 1', { exact: true }).fill(String(q));
+}
+
+test(
+  'a JW challan-out carries the party lot per item, and blanks it with an em dash when the origin had none',
+  async ({ page, db }) => {
+    const Q = 7;
+    const partyLot = codes.unique('PL');
+
+    // Line 1's lot carries a party lot; line 2's does not. Both are SKU-less
+    // sentinel lots on the same first-active quality, so one quality pick
+    // drives both lines and neither needs the SKU picker (same reasoning as
+    // challan-pdf.spec.ts:62-63).
+    const withPl = await createSentinelPurchase(page, db, Q, { partyLotNo: partyLot });
+    const withoutPl = await createSentinelPurchase(page, db, Q);
+    // Documents the fixture's intent, not the app's behaviour: the helper
+    // echoes its own input, so these can only go red alongside a typecheck
+    // failure. Kept as the reader's statement of which lot is which.
+    expect(withPl.partyLotNo).toBe(partyLot);
+    expect(withoutPl.partyLotNo).toBeNull();
+
+    const quality = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM yarn_qualities WHERE id = $1`,
+      [withPl.qualityId],
+    );
+    expect(quality, 'the sentinel purchases must reference a real quality').not.toBeNull();
+
+    const jobWorker = await db.queryOne<{ code: string; name: string }>(
+      `SELECT code, name FROM job_workers WHERE status = 'active' ORDER BY code LIMIT 1`,
+    );
+    expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
+
+    await gotoAndExpect(page, '/jw-challans-out/new');
+    await selectByLabel(page, 'Job worker', `${jobWorker!.code} – ${jobWorker!.name}`);
+    // SourceLotPicker stays disabled until jobWorkTypes is non-empty.
+    await page.getByLabel('Twisting').check();
+
+    // Line 1 — the party-lot lot.
+    await selectByAriaLabel(page, 'Quality for line 1', `${quality!.code} – ${quality!.name}`);
+    await selectByAriaLabel(page, 'Source lot for line 1', withPl.lotNumber);
+    await fillByLabel(page, 'Net weight for line 1', String(Q));
+    await placeWholeLine(page, 1, `${withPl.location.name} · ${withPl.floor.name}`, Q);
+
+    // Line 2 — the bare lot. "Add line" is ChallanOutLineItemTable.tsx:137.
+    await clickButton(page, 'Add line');
+    await selectByAriaLabel(page, 'Quality for line 2', `${quality!.code} – ${quality!.name}`);
+    await selectByAriaLabel(page, 'Source lot for line 2', withoutPl.lotNumber);
+    await fillByLabel(page, 'Net weight for line 2', String(Q));
+    await placeWholeLine(page, 2, `${withoutPl.location.name} · ${withoutPl.floor.name}`, Q);
+
+    await clickButton(page, 'Save challan');
+    await expectToast(page, /^Saved /);
+    await expect(page).toHaveURL(/\/jw-challans-out\/[^/]+$/);
+    const challanNo = await captureDocNo(page.getByRole('main'), /\bJWO-\d{4}-\d{2}-\d{3,}\b/);
+    const challanId = page.url().split('/').pop();
+    expect(challanId, 'save must redirect to a detail URL carrying the new id').toBeTruthy();
+
+    // ── WIRE ────────────────────────────────────────────────────────────────
+    // Keyed by sourceLotNumber, never by array index: nothing in the contract
+    // promises the items come back in form order.
+    const wireRes = await page.request.get(`${env.API_URL}/jw-challans-out/${challanId}`);
+    expect(wireRes.ok()).toBe(true);
+    const wireBody = (await wireRes.json()) as {
+      items: { sourceLotNumber: string; partyLotNo: string | null }[];
+    };
+    expect(wireBody.items).toHaveLength(2);
+    const partyLotByLot = new Map(
+      wireBody.items.map((item) => [item.sourceLotNumber, item.partyLotNo]),
+    );
+    expect(
+      partyLotByLot.get(withPl.lotNumber),
+      'the lot minted with a party lot must carry it verbatim (L1/L4)',
+    ).toBe(partyLot);
+    expect(
+      partyLotByLot.get(withoutPl.lotNumber),
+      'a lot whose origin recorded no party lot must be null, NOT the minted lot (L2)',
+    ).toBeNull();
+
+    // ── SCREEN ──────────────────────────────────────────────────────────────
+    await gotoAndExpect(page, `/jw-challans-out/${challanId}`);
+    await expect(
+      page.getByRole('heading', { name: `Job Work Challan Out ${challanNo}` }),
+    ).toBeVisible();
+
+    // Scoped to the ONE cell containing each minted lot. A row-level check
+    // would be vacuous for the em dash: bags, cones and gross weight all render
+    // '—' in the same row (jw-challan-out-detail.page.tsx:317-325) because this
+    // fixture fills only net weight.
+    const lotCellFor = (lotNumber: string): Locator =>
+      page.getByRole('row', { name: lotNumber }).getByRole('cell').filter({ hasText: lotNumber });
+
+    const presentCell = lotCellFor(withPl.lotNumber);
+    await expect(presentCell).toHaveCount(1);
+    await expect(presentCell).toContainText(partyLot);
+    await expect(presentCell).toContainText(withPl.lotNumber);
+
+    // U+2014 EM DASH, the character jw-challan-out-detail.page.tsx uses for an
+    // absent value — not the U+2013 en dash of the "code – name" option labels.
+    const absentCell = lotCellFor(withoutPl.lotNumber);
+    await expect(absentCell).toHaveCount(1);
+    await expect(absentCell).toContainText('—');
+    await expect(absentCell).toContainText(withoutPl.lotNumber);
+    // L2, stated as a negative: no fallback to the OTHER line's party lot
+    // either, which is what a map collapsed to a single value would produce.
+    await expect(absentCell).not.toContainText(partyLot);
   },
 );

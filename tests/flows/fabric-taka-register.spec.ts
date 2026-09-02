@@ -128,8 +128,8 @@ async function fundWeftLot(
   };
 }
 
-// Reads the Stock Balance Fabric tab's placed/unplaced pair for one design,
-// straight off the rendered table row (inventory-balance.page.tsx:224-233:
+// Reads the Inventory hub Fabric tab's placed/unplaced pair for one design,
+// straight off the rendered table row (inventory-hub.page.tsx renders
 // `Placed ${n} · Unplaced ${m}`). A design with zero taka yet renders NO row
 // at all (the tbody maps over fabricRows, which the aggregate query never
 // returns a zero-taka design in) — treat "row absent" as {placed:0,

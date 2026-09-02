@@ -68,6 +68,17 @@ const ROUTES: readonly GuardedRoute[] = [
     heading: 'Fabric Takas',
     allowedRoles: ['owner', 'storekeeper', 'accountant'],
   },
+  {
+    // Authenticated-but-ungated: router.tsx wraps this route in NO RoleGuard,
+    // so every role reads the report. It contributes three `allowed` cases and
+    // no denied one — it is NOT the both-branch role test for this feature.
+    // Spec §5.5 gates the thresholds EDITOR, not the route, and
+    // flows/wastage-report.spec.ts owns that in both directions (shown for
+    // owner + storekeeper, unmounted for accountant).
+    path: '/reports/wastage',
+    heading: 'Wastage',
+    allowedRoles: ['owner', 'storekeeper', 'accountant'],
+  },
 ];
 
 function escapeRegExp(value: string): string {

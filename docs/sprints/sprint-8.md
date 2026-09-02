@@ -539,3 +539,59 @@ mode this doc exists to prevent. Re-run the four repos' gates before the merge-t
 Unchanged from the release append above: **B-028** first (it fails `fabtraq-fe` CI on every push
 today and blocks the merge PR everywhere), then **merge to `main`** — nothing has ever been merged
 in any repo — then **Sprint 7**.
+
+## Status append — 2026-09-02: party lot on the JW-Out challan — Stage 4 COMPLETE, Stage 5 in progress
+
+Sessions `session-1788324721003` → `session-1788332780442` (Claude session
+`session_01GP5qonJqGsjWqF1L3bgAbh`); Stage-1 brainstorm `54c5222c-86f3-48e4-9fce-9e0c823ca902`
+(2026-09-01). FULL tier (shared contract + challan-print). Branch `feat/inventory-rewoven` in all four
+repos. **Nothing pushed; push waits for the owner's explicit go.**
+
+Spec `docs/superpowers/specs/2026-09-02-party-lot-on-jw-out-challan-design.md` — two review rounds
+(shared-reviewer + critic), all findings applied; owner go = "complete all the stages"; Q1–Q3 (§4.1)
+taken at their recommendations and recorded as an assumption. Plans per repo under
+`docs/superpowers/plans/2026-09-02-party-lot-on-jw-out-challan-{shared,be,fe,e2e}.md`.
+
+### Landed (local, unpushed)
+
+| Repo | Commits | What |
+|---|---|---|
+| shared | `b26c2e6` `165c4e6` | `partyLotNo: z.string().nullable()` on the item response; **1.28.0 PUBLISHED** (registry verified); challan-pdf spec widths doc mirror |
+| be | `1acd8c9` `941e3f2` `33c207c` `67091dc` `9e9f3cf` | prettier chore; mapper 4th param (no default) + all five paths resolve via one hoisted `findPartyLotsByLotNumbers` per page; integration V2/V3/precedence; bump to 1.28.0 + `docs/openapi.json` re-emitted; widths doc mirror |
+| fe | `e2fb0f5` `ade7680` `82e7b06` `b1a14ba` `acc8fd0` `e481b73` | bump + fixtures; chore (dead `deleteJobWorker` removed, prettier); print `partyLotNo ?? ''` + widths 37/20 + visual case 14; stacked cell on both detail pages + 4 integration tests; two merge commits |
+| e2e | `625dda1` `3bc0b2f` `2933354` `f3fb054` | sentinel-purchase `partyLotNo` option; challan-pdf wire+cell assertions; jw-out 2-lot test; carry-forward L3 verbatim wire assertion |
+
+### Gates run (measured this session, not carried forward)
+
+| Gate | Result |
+|---|---|
+| shared verify | 1303 tests, build ok |
+| BE unit / integration / coverage | 887/887 · 724/724 (fabtraq_test) · 90.74 / 79.94 / 89.85 / 91.98 |
+| FE verify on merged tree `e481b73` | 1640/1640 · contract:paths 128/128 · coverage 93.42 / 88.09 / 85.82 / 93.42 · build ok |
+| e2e single-spec live | challan-pdf 4 ✓ · jw-out 7 ✓ · party-lot-carry-forward 6 ✓ |
+| e2e full `npm run e2e` | **174 passed, 9.8 min, 0 failed** |
+| docs mirror | spec, 4 plans, sprint-8, challan-pdf spec — one md5 per file across all trees |
+| visual matrix | before/after PNGs read: case 14 correct (3-way fits, long 2-way ellipsised without hyphen glyph, null blank); case 8 (synthetic 120-char quality) wraps to 2 lines and clips mid-word at 37% — **Q3 accepted** (real quality names are short) |
+| per-task diff reviews | shared T1 GO · e2e T1–T4 GO/GO/NO-GO(wave-order only, accepted)/GO · BE T1+2, T3, T4 GO · FE T0 GO · FE T1 GO · FE T2 weaving GO, jw-out NO-GO pending the live screenshot (Stage 5 item A) |
+
+### Deviations recorded
+- BE plan Task 1 Step 10 was wrong (no-default 4th param cannot be green unwired; 125 integration
+  failures). Kept "no default" (spec §3.2); Tasks 1+2 landed as one commit. Amendment note atop BE
+  plan Task 1.
+- e2e specs were committed before FE Wave 3 (typecheck-gated) and proven live afterwards — all green.
+- FE Wave 3a/3b ran in two worktrees off `ade7680`, merged with `--no-ff`; worktrees removed.
+- Two pre-existing FE gate failures fixed as a chore (`ade7680`); one pre-existing BE format failure
+  fixed as a chore (`1acd8c9`).
+- Handbook edits (`.claude/agents/modules/{jw-challan-out,challan-print}/BRIEF.md`) live at the
+  repo root, outside git — citations re-verified with `check-citations.mjs` (60/60 challan-print).
+
+### Stage 5 — DONE 2026-09-02 (9-gate bar)
+BE unit+integration ✓ · FE unit+integration ✓ · FE smoke against live BE 98/98 ✓ · live e2e 174/174 ✓ ·
+MSW-schema validation (jsonValidated handlers, FE suite) ✓ · docs mirror ✓ · lint/build ✓ · coverage debt none ✓ ·
+**original symptom re-verified in the browser**: printed PDF of `JWO-2026-27-049` shows `PL-sqnn8-901` in Lot No.
+(blank for the lot without a party lot); detail page stacks party lot over the muted minted lot, `—` when null;
+weaving-dispatch weft table shows the same cell. Screenshot spec kept at `e2e/tests/visual/party-lot-cell.spec.ts`.
+FE Task 2 jw-out review's NO-GO (missing screenshot) is thereby cleared.
+
+**Open for the owner:** push go. Raise PRs and merge in the forced order **BE → shared → FE → e2e**
+(`contract-smoke.yml` pins shared+BE at main; shared first would break every FE PR). Never merge to main locally.

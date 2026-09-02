@@ -9,6 +9,7 @@ import {
 } from '../../support/forms';
 import { expectToast, captureDocNo } from '../../support/assert';
 import { SENTINEL_OPTION_LABEL, SKU_ANSWER_REQUIRED } from '../../fixtures/copy';
+import { RAW_FLOOR_LOT_SQL, RAW_LOT_ORDER } from '../../support/lots';
 
 // JW Challan In (yarn) — PER-LOT SOURCES FORM (spec 2026-07-23, supersedes the
 // 2026-07-22 consolidated-form spec's Section B/allocator/Place-expander):
@@ -55,28 +56,8 @@ interface SourceLotRow {
   floor_id: string;
 }
 
-const RAW_LOT_SQL = `SELECT s.lot_number, s.sku_id, s.quality_id,
-        q.code AS quality_code, q.name AS quality_name,
-        sku.name AS sku_name, sku.shade_number AS sku_shade_number,
-        l.name AS loc_name, f.name AS floor_name, f.id AS floor_id
- FROM stock_ledger s
- JOIN location_floors f ON f.id = s.floor_id
- JOIN locations l ON l.id = f.location_id
- JOIN yarn_qualities q ON q.id = s.quality_id
- JOIN yarn_skus sku ON sku.id = s.sku_id
- WHERE s.lot_number IS NOT NULL
-   AND s.sku_id IS NOT NULL
-   AND s.job_worker_id IS NULL
-   AND l.status = 'active' AND f.status = 'active'
-   AND q.status = 'active' AND sku.status = 'active'
-   AND cardinality(s.processed_types) = 0
- GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
-          sku.name, sku.shade_number, l.name, f.name, f.id
- HAVING SUM(s.in_quantity - s.out_quantity) >= $1
- ORDER BY s.lot_number
- LIMIT 1`;
 
-// Same shape as RAW_LOT_SQL but scoped to one SKU code — used by the
+// Same shape as RAW_FLOOR_LOT_SQL but scoped to one SKU code — used by the
 // cross-SKU test to pin down the RED (SKU-001) and BLUE (SKU-002) raw lots
 // independently under the single seeded quality that carries two SKUs
 // (QTY-001).
@@ -90,16 +71,13 @@ const RAW_LOT_FOR_SKU_SQL = `SELECT s.lot_number, s.sku_id, s.quality_id,
  JOIN yarn_qualities q ON q.id = s.quality_id
  JOIN yarn_skus sku ON sku.id = s.sku_id
  WHERE s.lot_number IS NOT NULL
-   AND s.job_worker_id IS NULL
    AND l.status = 'active' AND f.status = 'active'
    AND q.status = 'active' AND sku.status = 'active'
    AND cardinality(s.processed_types) = 0
    AND sku.code = $1
  GROUP BY s.lot_number, s.sku_id, s.quality_id, q.code, q.name,
           sku.name, sku.shade_number, l.name, f.name, f.id
- HAVING SUM(s.in_quantity - s.out_quantity) >= $2
- ORDER BY s.lot_number
- LIMIT 1`;
+ HAVING SUM(s.in_quantity - s.out_quantity) >= $2${RAW_LOT_ORDER}`;
 
 function skuLabelOf(src: SourceLotRow): string {
   return src.sku_shade_number !== null && src.sku_shade_number !== ''
@@ -213,7 +191,7 @@ test(
     );
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
-    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    const src = await db.queryOne<SourceLotRow>(RAW_FLOOR_LOT_SQL, [Q]);
     expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
 
     const receivingFloor = await db.queryOne<{
@@ -288,7 +266,7 @@ test(
     );
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
-    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    const src = await db.queryOne<SourceLotRow>(RAW_FLOOR_LOT_SQL, [Q]);
     expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
 
     const receivingFloor = await db.queryOne<{
@@ -549,7 +527,7 @@ test(
     );
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
-    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    const src = await db.queryOne<SourceLotRow>(RAW_FLOOR_LOT_SQL, [Q]);
     expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
 
     const receivingFloor = await db.queryOne<{
@@ -827,7 +805,7 @@ test(
     );
     expect(jobWorker, 'seed must provide at least one active job worker').not.toBeNull();
 
-    const src = await db.queryOne<SourceLotRow>(RAW_LOT_SQL, [Q]);
+    const src = await db.queryOne<SourceLotRow>(RAW_FLOOR_LOT_SQL, [Q]);
     expect(src, 'seed must provide a raw lot with >=10 balance on an active floor').not.toBeNull();
 
     const receivingFloor = await db.queryOne<{
